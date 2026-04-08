@@ -23,7 +23,7 @@ _PG_DBNAME   = os.getenv("PG_DBNAME", "postgres").strip()
 _PG_PORT     = int(os.getenv("PG_PORT", "5432"))
 _USE_PG_PARAMS = bool(_PG_HOST and _PG_PASSWORD)
 
-USE_POSTGRES: bool = bool(_DATABASE_URL) or _USE_PG_PARAMS
+USE_POSTGRES: bool = _USE_PG_PARAMS or bool(_DATABASE_URL)
 
 
 # ── Adaptación de SQL ─────────────────────────────────────────────────────────
@@ -234,8 +234,9 @@ def get_pg_connection():
     """Devuelve una conexión PostgreSQL envuelta en la interfaz compatible."""
     import psycopg2
 
+    # Parámetros individuales tienen PRIORIDAD sobre DATABASE_URL
+    # (evita problemas con contraseñas con caracteres especiales como %, ?, *, +)
     if _USE_PG_PARAMS:
-        # Conexión con parámetros individuales — evita problemas con caracteres especiales en la contraseña
         pg_conn = psycopg2.connect(
             host=_PG_HOST,
             user=_PG_USER or "postgres",
@@ -244,11 +245,13 @@ def get_pg_connection():
             port=_PG_PORT,
             sslmode="require",
         )
-    else:
+    elif _DATABASE_URL:
         url = _DATABASE_URL
-        if "sslmode" not in (url or ""):
-            url = (url or "").rstrip("/") + "?sslmode=require"
+        if "sslmode" not in url:
+            url = url.rstrip("/") + "?sslmode=require"
         pg_conn = psycopg2.connect(url)
+    else:
+        raise RuntimeError("No se encontró configuración de base de datos. Define PG_HOST+PG_PASSWORD o DATABASE_URL.")
 
     pg_conn.autocommit = False
     return _PgConnectionWrapper(pg_conn)
