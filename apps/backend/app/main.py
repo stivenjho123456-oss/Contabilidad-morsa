@@ -556,6 +556,22 @@ async def auth_and_security_middleware(request: Request, call_next):
 @app.on_event("startup")
 def on_startup():
     app.state.runtime = _startup_state()
+    from db_adapter import USE_POSTGRES
+    if USE_POSTGRES:
+        # En modo PostgreSQL el schema ya existe (aplicado vía supabase/schema.sql).
+        # Solo verificamos que la conexión funcione.
+        try:
+            from db_adapter import get_pg_connection
+            conn = get_pg_connection()
+            conn.execute("SELECT 1")
+            conn.close()
+            logger.info("Conexión PostgreSQL verificada correctamente.")
+            app.state.runtime["db_health"] = {"ok": True, "backend": "postgresql"}
+        except Exception as exc:
+            logger.error("No se pudo conectar a PostgreSQL en startup: %s", exc)
+            raise RuntimeError("Fallo de conexión a PostgreSQL.") from exc
+        return
+
     try:
         init_db()
         health = get_database_health()
