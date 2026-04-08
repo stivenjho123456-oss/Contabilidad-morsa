@@ -271,34 +271,69 @@ class _ScalarCursor:
         return iter([self.fetchone()])
 
 
-# ── Fábrica de conexión pública ───────────────────────────────────────────────
+# ── Pool de conexiones ────────────────────────────────────────────────────────
 
-def get_pg_connection():
-    """Devuelve una conexión PostgreSQL envuelta en la interfaz compatible."""
+_pool = None  # psycopg2.pool.ThreadedConnectionPool, inicializado en _get_pool()
+
+def _get_pool():
+    """Devuelve el pool de conexiones, creándolo si no existe."""
+    global _pool
+    if _pool is not None:
+        return _pool
+
     import psycopg2
+    import psycopg2.pool
 
-    # Parámetros individuales tienen PRIORIDAD sobre DATABASE_URL
-    # (evita problemas con contraseñas con caracteres especiales como %, ?, *, +)
+    kwargs: dict = {"connect_timeout": 15, "sslmode": "require"}
+
     if _USE_PG_PARAMS:
-        pg_conn = psycopg2.connect(
+        kwargs.update(
             host=_PG_HOST,
             user=_PG_USER or "postgres",
             password=_PG_PASSWORD,
             dbname=_PG_DBNAME,
             port=_PG_PORT,
-            sslmode="require",
-            connect_timeout=15,
         )
     elif _DATABASE_URL:
         url = _DATABASE_URL
         if "sslmode" not in url:
             url = url.rstrip("/") + "?sslmode=require"
-        pg_conn = psycopg2.connect(url)
+        # Con URL usamos dsn; los kwargs extra no aplican
+        _pool = psycopg2.pool.ThreadedConnectionPool(1, 5, dsn=url)
+        return _pool
     else:
-        raise RuntimeError("No se encontró configuración de base de datos. Define PG_HOST+PG_PASSWORD o DATABASE_URL.")
+        raise RuntimeError("No se encontró configuración de base de datos.")
 
-    pg_conn.autocommit = True  # Evita BEGIN implícito — compatible con Transaction Pooler
-    return _PgConnectionWrapper(pg_conn)
+    _pool = psycopg2.pool.ThreadedConnectionPool(1, 5, **kwargs)
+    return _pool
+
+
+# ── Fábrica de conexión pública ───────────────────────────────────────────────
+
+def get_pg_connection():
+    """Saca una conexión del pool y la devuelve envuelta en la interfaz compatible."""
+    pool = _get_pool()
+    pg_conn = pool.getconn()
+    pg_conn.autocommit = True  # Evita BEGIN implícito — compatible con Session Pooler
+    return _PooledPgConnectionWrapper(pg_conn, pool)
+
+
+class _PooledPgConnectionWrapper(_PgConnectionWrapper):
+    """Igual que _PgConnectionWrapper pero devuelve la conexión al pool al cerrar."""
+
+    def __init__(self, pg_conn, pool):
+        super().__init__(pg_conn)
+        self._pool = pool
+
+    def close(self):
+        try:
+            self._cur.close()
+        except Exception:
+            pass
+        try:
+            self._pool.putconn(self._conn)
+        except Exception:
+            pass
 
 
 def get_sqlite_connection(db_path: str):
