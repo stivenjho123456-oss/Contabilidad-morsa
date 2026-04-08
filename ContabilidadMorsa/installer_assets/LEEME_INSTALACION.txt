@@ -1,0 +1,35 @@
+CONTABILIDAD MORSA - INSTALACION MACOS
+
+Contenido del paquete:
+- Contabilidad Morsa.app
+- Base de datos inicial, si fue incluida
+- Carpeta de backups, si fue incluida
+- INSTALAR.command
+
+Instalacion recomendada:
+1. Descomprime el paquete completo.
+2. Haz doble clic en INSTALAR.command.
+3. Si macOS lo bloquea, usa clic derecho > Abrir.
+4. Abre la app instalada.
+
+Que hace el instalador:
+- Copia la app a /Applications si es posible.
+- Si no tiene permisos, la instala en ~/Applications.
+- Copia la base de datos inicial solo si el Mac destino no tiene una ya creada.
+- Copia backups incluidos sin sobreescribir backups ya existentes.
+
+Donde quedan los datos:
+- Base de datos:
+  ~/Library/Application Support/Contabilidad Morsa/contabilidad.db
+- Backups:
+  ~/Library/Application Support/Contabilidad Morsa/backups/
+
+Comportamiento al abrir la app:
+- La aplicacion levanta un servidor local.
+- Luego abre el navegador del sistema automaticamente.
+- La URL normal es http://127.0.0.1:8010 o el siguiente puerto libre.
+
+Recomendaciones para el cliente:
+- Guardar un backup externo en memoria USB despues de instalar.
+- Si la app no abre a la primera, intentar clic derecho > Abrir.
+- No borrar la carpeta de datos del usuario.

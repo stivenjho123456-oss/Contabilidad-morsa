@@ -1,0 +1,29 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+apps/frontend/node_modules/
+apps/frontend/dist/
+build/
+dist/
+dist_installer/
+
+.claude/
+.appdata/
+contabilidad.db
+*.db-shm
+*.db-wal
+uvicorn-*.log
+vite-*.out
+ContabilidadMorsa/contabilidad.db
+ContabilidadMorsa/backups/
+
+client_secret_*.json
+ENERO 2026.xlsx
+FEBRERO 2026.xlsx
+Ingresos_*.xlsx
+Nomina_FEBRERO_2026.xlsx
+relaciones-empresa-fondo.xlsx
+seguimiento-por-analista.xlsx
+seguimiento-por-empresa.xlsx
