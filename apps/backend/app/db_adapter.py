@@ -267,6 +267,7 @@ def get_pg_connection():
             dbname=_PG_DBNAME,
             port=_PG_PORT,
             sslmode="require",
+            connect_timeout=15,
         )
     elif _DATABASE_URL:
         url = _DATABASE_URL
