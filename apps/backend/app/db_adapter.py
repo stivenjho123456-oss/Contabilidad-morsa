@@ -151,6 +151,7 @@ class _PgConnectionWrapper:
         self._cur = pg_conn.cursor()  # cursor estándar (tuplas), NO RealDictCursor
         self._last_id: int | None = None
         self.row_factory = None
+        self._broken = False  # se marca True si hay error de conexión
 
     # ------------------------------------------------------------------
     def execute(self, sql: str, params=None):
@@ -202,6 +203,12 @@ class _PgConnectionWrapper:
             # Tabla que aún no existe — ignorar (init_db usa IF NOT EXISTS)
             self._conn.rollback()
             return _EmptyCursor()
+        except Exception as exc:
+            import psycopg2
+            if isinstance(exc, psycopg2.OperationalError):
+                # Error de red/SSL — marcar conexión como rota para que el pool la descarte
+                self._broken = True
+            raise
 
         if is_insert:
             row = self._cur.fetchone()
@@ -300,12 +307,12 @@ def _get_pool():
         if "sslmode" not in url:
             url = url.rstrip("/") + "?sslmode=require"
         # Con URL usamos dsn; los kwargs extra no aplican
-        _pool = psycopg2.pool.ThreadedConnectionPool(2, 10, dsn=url)
+        _pool = psycopg2.pool.ThreadedConnectionPool(1, 3, dsn=url)
         return _pool
     else:
         raise RuntimeError("No se encontró configuración de base de datos.")
 
-    _pool = psycopg2.pool.ThreadedConnectionPool(2, 10, **kwargs)
+    _pool = psycopg2.pool.ThreadedConnectionPool(1, 3, **kwargs)
     return _pool
 
 
@@ -336,7 +343,8 @@ class _PooledPgConnectionWrapper(_PgConnectionWrapper):
         except Exception:
             pass
         try:
-            self._pool.putconn(self._conn)
+            # Si la conexión está rota, se le indica al pool que la descarte
+            self._pool.putconn(self._conn, close=self._broken)
         except Exception:
             pass
 
