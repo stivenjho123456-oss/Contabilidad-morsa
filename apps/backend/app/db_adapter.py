@@ -15,7 +15,15 @@ from pathlib import Path
 from typing import Any
 
 _DATABASE_URL: str | None = os.getenv("DATABASE_URL")
-USE_POSTGRES: bool = bool(_DATABASE_URL)
+# Soporte alternativo con variables individuales (evita problemas con contraseñas con caracteres especiales)
+_PG_HOST     = os.getenv("PG_HOST", "").strip()
+_PG_USER     = os.getenv("PG_USER", "").strip()
+_PG_PASSWORD = os.getenv("PG_PASSWORD", "").strip()
+_PG_DBNAME   = os.getenv("PG_DBNAME", "postgres").strip()
+_PG_PORT     = int(os.getenv("PG_PORT", "5432"))
+_USE_PG_PARAMS = bool(_PG_HOST and _PG_PASSWORD)
+
+USE_POSTGRES: bool = bool(_DATABASE_URL) or _USE_PG_PARAMS
 
 
 # ── Adaptación de SQL ─────────────────────────────────────────────────────────
@@ -226,13 +234,22 @@ def get_pg_connection():
     """Devuelve una conexión PostgreSQL envuelta en la interfaz compatible."""
     import psycopg2
 
-    # Supabase requiere sslmode=require — ya viene en el connection string
-    # pero lo reforzamos por si acaso
-    url = _DATABASE_URL
-    if "sslmode" not in (url or ""):
-        url = (url or "").rstrip("/") + "?sslmode=require"
+    if _USE_PG_PARAMS:
+        # Conexión con parámetros individuales — evita problemas con caracteres especiales en la contraseña
+        pg_conn = psycopg2.connect(
+            host=_PG_HOST,
+            user=_PG_USER or "postgres",
+            password=_PG_PASSWORD,
+            dbname=_PG_DBNAME,
+            port=_PG_PORT,
+            sslmode="require",
+        )
+    else:
+        url = _DATABASE_URL
+        if "sslmode" not in (url or ""):
+            url = (url or "").rstrip("/") + "?sslmode=require"
+        pg_conn = psycopg2.connect(url)
 
-    pg_conn = psycopg2.connect(url)
     pg_conn.autocommit = False
     return _PgConnectionWrapper(pg_conn)
 
