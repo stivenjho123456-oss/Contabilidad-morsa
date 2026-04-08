@@ -33,6 +33,10 @@ def _adapt_sql(sql: str) -> str:
     # Placeholders ? → %s
     sql = sql.replace("?", "%s")
 
+    # Strings vacíos con comillas dobles ("") → comillas simples ('')
+    # SQLite permite "" como string vacío; PostgreSQL solo acepta ''
+    sql = sql.replace('""', "''")
+
     # strftime SQLite → TO_CHAR / EXTRACT PostgreSQL
     sql = re.sub(
         r"strftime\('%m',\s*([^)]+)\)",
@@ -56,6 +60,55 @@ def _adapt_sql(sql: str) -> str:
     return sql
 
 
+# ── Row proxy ─────────────────────────────────────────────────────────────────
+
+class _RowProxy:
+    """
+    Proxy que permite acceso por índice (row[0]) Y por nombre (row["col"]),
+    como sqlite3.Row.
+
+    Usa cursor.description para mapear nombres → posición, lo que permite
+    manejar correctamente columnas con el mismo nombre (ej: múltiples COALESCE).
+    """
+
+    def __init__(self, row_tuple, description):
+        self._values = list(row_tuple)
+        # Construir mapeo nombre → primer índice (el primero gana en caso de duplicado)
+        self._key_map: dict[str, int] = {}
+        self._keys: list[str] = []
+        if description:
+            for i, desc in enumerate(description):
+                col_name = desc[0]
+                self._keys.append(col_name)
+                if col_name not in self._key_map:
+                    self._key_map[col_name] = i
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._values[self._key_map[key]]
+
+    def __contains__(self, key):
+        return key in self._key_map
+
+    def keys(self):
+        return self._keys
+
+    def get(self, key, default=None):
+        if key in self._key_map:
+            return self._values[self._key_map[key]]
+        return default
+
+    def items(self):
+        return [(self._keys[i], self._values[i]) for i in range(len(self._values))]
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __repr__(self):
+        return f"<Row {dict(zip(self._keys, self._values))}>"
+
+
 # ── Cursor wrapper ────────────────────────────────────────────────────────────
 
 class _PgCursorWrapper:
@@ -63,57 +116,25 @@ class _PgCursorWrapper:
 
     def __init__(self, pg_cursor):
         self._cur = pg_cursor
-        self._rows: list | None = None
 
     def fetchone(self):
         row = self._cur.fetchone()
         if row is None:
             return None
-        # RealDictRow ya se comporta como dict; lo envolvemos para acceso por índice
-        return _RowProxy(row)
+        return _RowProxy(row, self._cur.description)
 
     def fetchall(self):
-        return [_RowProxy(r) for r in self._cur.fetchall()]
+        desc = self._cur.description
+        return [_RowProxy(r, desc) for r in self._cur.fetchall()]
 
     @property
     def lastrowid(self):
         return getattr(self._cur, "lastrowid", None)
 
     def __iter__(self):
+        desc = self._cur.description
         for row in self._cur:
-            yield _RowProxy(row)
-
-
-class _RowProxy:
-    """Proxy que permite acceso dict-like y por índice, como sqlite3.Row."""
-
-    def __init__(self, row):
-        # row es un dict (RealDictRow de psycopg2)
-        self._row = dict(row) if row is not None else {}
-        self._keys = list(self._row.keys())
-
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return self._row[self._keys[key]]
-        return self._row[key]
-
-    def __contains__(self, key):
-        return key in self._row
-
-    def keys(self):
-        return self._keys
-
-    def get(self, key, default=None):
-        return self._row.get(key, default)
-
-    def items(self):
-        return self._row.items()
-
-    def __iter__(self):
-        return iter(self._keys)
-
-    def __repr__(self):
-        return f"<Row {self._row}>"
+            yield _RowProxy(row, desc)
 
 
 # ── Conexión PostgreSQL wrapper ───────────────────────────────────────────────
@@ -125,11 +146,10 @@ class _PgConnectionWrapper:
     """
 
     def __init__(self, pg_conn):
-        import psycopg2.extras  # importación diferida
         self._conn = pg_conn
-        self._cur = pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        self._cur = pg_conn.cursor()  # cursor estándar (tuplas), NO RealDictCursor
         self._last_id: int | None = None
-        self.row_factory = None  # ignorado; usamos RealDictCursor
+        self.row_factory = None
 
     # ------------------------------------------------------------------
     def execute(self, sql: str, params=None):
@@ -184,8 +204,8 @@ class _PgConnectionWrapper:
 
         if is_insert:
             row = self._cur.fetchone()
-            if row and "id" in row:
-                self._last_id = row["id"]
+            if row:
+                self._last_id = row[0]  # RETURNING id → primera columna
                 return _ScalarCursor(self._last_id)
 
         return _PgCursorWrapper(self._cur)
@@ -242,7 +262,7 @@ class _ScalarCursor:
         self._value = value
 
     def fetchone(self):
-        return _RowProxy({"id": self._value, 0: self._value})
+        return _RowProxy((self._value,), [("id", None, None, None, None, None, None)])
 
     def fetchall(self):
         return [self.fetchone()]
@@ -277,7 +297,7 @@ def get_pg_connection():
     else:
         raise RuntimeError("No se encontró configuración de base de datos. Define PG_HOST+PG_PASSWORD o DATABASE_URL.")
 
-    pg_conn.autocommit = False
+    pg_conn.autocommit = True  # Evita BEGIN implícito — compatible con Transaction Pooler
     return _PgConnectionWrapper(pg_conn)
 
 
