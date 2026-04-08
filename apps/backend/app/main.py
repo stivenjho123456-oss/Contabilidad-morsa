@@ -559,17 +559,27 @@ def on_startup():
     from db_adapter import USE_POSTGRES
     if USE_POSTGRES:
         # En modo PostgreSQL el schema ya existe (aplicado vía supabase/schema.sql).
-        # Solo verificamos que la conexión funcione.
-        try:
-            from db_adapter import get_pg_connection
-            conn = get_pg_connection()
-            conn.execute("SELECT 1")
-            conn.close()
-            logger.info("Conexión PostgreSQL verificada correctamente.")
-            app.state.runtime["db_health"] = {"ok": True, "backend": "postgresql"}
-        except Exception as exc:
-            logger.error("No se pudo conectar a PostgreSQL en startup: %s", exc)
-            raise RuntimeError("Fallo de conexión a PostgreSQL.") from exc
+        # Verificamos la conexión con hasta 3 intentos para tolerar retrasos de Supabase.
+        import time as _time
+        last_exc = None
+        for attempt in range(1, 4):
+            try:
+                from db_adapter import get_pg_connection
+                conn = get_pg_connection()
+                conn.execute("SELECT 1")
+                conn.close()
+                logger.info("Conexión PostgreSQL verificada correctamente (intento %d).", attempt)
+                app.state.runtime["db_health"] = {"ok": True, "backend": "postgresql"}
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("Intento %d/3 fallido al conectar a PostgreSQL: %s", attempt, exc)
+                if attempt < 3:
+                    _time.sleep(3)
+        if last_exc is not None:
+            logger.error("No se pudo conectar a PostgreSQL tras 3 intentos.")
+            raise RuntimeError("Fallo de conexión a PostgreSQL.") from last_exc
         return
 
     try:

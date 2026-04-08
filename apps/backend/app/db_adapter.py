@@ -55,6 +55,9 @@ def _adapt_sql(sql: str) -> str:
         sql,
     )
 
+    # BEGIN IMMEDIATE (SQLite) → BEGIN (PostgreSQL no tiene IMMEDIATE)
+    sql = re.sub(r"\bBEGIN\s+IMMEDIATE\b", "BEGIN", sql, flags=re.IGNORECASE)
+
     # last_insert_rowid() — eliminado; se usa RETURNING id en su lugar
     sql = re.sub(r"SELECT\s+last_insert_rowid\(\)", "SELECT 0", sql, flags=re.IGNORECASE)
 
@@ -292,7 +295,7 @@ def _get_pool():
     import psycopg2
     import psycopg2.pool
 
-    kwargs: dict = {"connect_timeout": 15, "sslmode": "require"}
+    kwargs: dict = {"connect_timeout": 8, "sslmode": "require"}
 
     if _USE_PG_PARAMS:
         kwargs.update(
@@ -307,23 +310,42 @@ def _get_pool():
         if "sslmode" not in url:
             url = url.rstrip("/") + "?sslmode=require"
         # Con URL usamos dsn; los kwargs extra no aplican
-        _pool = psycopg2.pool.ThreadedConnectionPool(1, 3, dsn=url)
+        _pool = psycopg2.pool.ThreadedConnectionPool(1, 8, dsn=url)
         return _pool
     else:
         raise RuntimeError("No se encontró configuración de base de datos.")
 
-    _pool = psycopg2.pool.ThreadedConnectionPool(1, 3, **kwargs)
+    _pool = psycopg2.pool.ThreadedConnectionPool(1, 8, **kwargs)
     return _pool
 
 
 # ── Fábrica de conexión pública ───────────────────────────────────────────────
 
 def get_pg_connection():
-    """Saca una conexión del pool y la devuelve envuelta en la interfaz compatible."""
+    """Saca una conexión del pool y la devuelve envuelta en la interfaz compatible.
+
+    Si el pool está temporalmente agotado (todas las conexiones en uso), reintenta
+    hasta 5 segundos antes de fallar. Esto evita errores en ráfagas de peticiones
+    simultáneas al cargar la página.
+    """
+    import time
+    import psycopg2.pool as _pg_pool
+
     pool = _get_pool()
-    pg_conn = pool.getconn()
-    pg_conn.autocommit = True  # Evita BEGIN implícito — compatible con Session Pooler
-    return _PooledPgConnectionWrapper(pg_conn, pool)
+    deadline = time.monotonic() + 5.0  # esperar hasta 5 segundos
+    delay = 0.1
+
+    while True:
+        try:
+            pg_conn = pool.getconn()
+            pg_conn.autocommit = True  # Evita BEGIN implícito — compatible con Session Pooler
+            return _PooledPgConnectionWrapper(pg_conn, pool)
+        except _pg_pool.PoolError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 1.0)  # backoff exponencial, máximo 1s
 
 
 class _PooledPgConnectionWrapper(_PgConnectionWrapper):
