@@ -118,7 +118,7 @@ DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:5175",
     "http://127.0.0.1:8010",
     "http://localhost:8010",
-    # En producción se sobreescribe con MORSA_ALLOWED_ORIGINS (dominio de Vercel)
+    "https://contabilidad-morsa.vercel.app",
 ]
 ALLOWED_SUPPORT_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 ALLOWED_SUPPORT_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg", "image/webp"}
