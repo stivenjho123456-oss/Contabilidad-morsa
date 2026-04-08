@@ -28,6 +28,11 @@ FRONTEND_DIST_DIR = ROOT_DIR / "apps" / "frontend" / "dist"
 if str(DESKTOP_APP_DIR) not in sys.path:
     sys.path.insert(0, str(DESKTOP_APP_DIR))
 
+# Asegura que el directorio de este archivo esté en el path (necesario en Render)
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
+
 # ── Adaptador de base de datos (PostgreSQL o SQLite) ─────────────────────────
 # Si DATABASE_URL está definido (Supabase/Render), usamos PostgreSQL.
 # De lo contrario, el módulo database.py usa SQLite local.
