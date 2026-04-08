@@ -33,9 +33,10 @@ def _adapt_sql(sql: str) -> str:
     # Placeholders ? → %s
     sql = sql.replace("?", "%s")
 
-    # Strings vacíos con comillas dobles ("") → comillas simples ('')
-    # SQLite permite "" como string vacío; PostgreSQL solo acepta ''
-    sql = sql.replace('""', "''")
+    # Strings con comillas dobles → comillas simples
+    # SQLite permite "valor" como string literal; PostgreSQL solo acepta 'valor'
+    # (en PostgreSQL las comillas dobles son para identificadores, no strings)
+    sql = re.sub(r'"([^"]*)"', r"'\1'", sql)
 
     # strftime SQLite → TO_CHAR / EXTRACT PostgreSQL
     sql = re.sub(
@@ -299,12 +300,12 @@ def _get_pool():
         if "sslmode" not in url:
             url = url.rstrip("/") + "?sslmode=require"
         # Con URL usamos dsn; los kwargs extra no aplican
-        _pool = psycopg2.pool.ThreadedConnectionPool(1, 5, dsn=url)
+        _pool = psycopg2.pool.ThreadedConnectionPool(2, 10, dsn=url)
         return _pool
     else:
         raise RuntimeError("No se encontró configuración de base de datos.")
 
-    _pool = psycopg2.pool.ThreadedConnectionPool(1, 5, **kwargs)
+    _pool = psycopg2.pool.ThreadedConnectionPool(2, 10, **kwargs)
     return _pool
 
 
@@ -324,8 +325,12 @@ class _PooledPgConnectionWrapper(_PgConnectionWrapper):
     def __init__(self, pg_conn, pool):
         super().__init__(pg_conn)
         self._pool = pool
+        self._returned = False
 
     def close(self):
+        if self._returned:
+            return
+        self._returned = True
         try:
             self._cur.close()
         except Exception:
@@ -334,6 +339,11 @@ class _PooledPgConnectionWrapper(_PgConnectionWrapper):
             self._pool.putconn(self._conn)
         except Exception:
             pass
+
+    def __del__(self):
+        # Garantiza que la conexión vuelva al pool aunque close() nunca se llame
+        # (ej: cuando database.py lanza excepción antes de conn.close())
+        self.close()
 
 
 def get_sqlite_connection(db_path: str):
