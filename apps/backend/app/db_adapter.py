@@ -150,6 +150,8 @@ class _PgConnectionWrapper:
         return self._exec_single(stripped, params)
 
     def _exec_single(self, sql: str, params):
+        import psycopg2.errors as pg_errors  # importación diferida
+
         # Detectar INSERT para agregar RETURNING id automáticamente
         is_insert = sql.strip().upper().startswith("INSERT")
         adapted = _adapt_sql(sql)
@@ -157,7 +159,16 @@ class _PgConnectionWrapper:
         if is_insert and "RETURNING" not in adapted.upper():
             adapted = adapted.rstrip().rstrip(";") + " RETURNING id"
 
-        self._cur.execute(adapted, params or ())
+        try:
+            self._cur.execute(adapted, params or ())
+        except pg_errors.DuplicateColumn:
+            # ALTER TABLE ADD COLUMN sobre una columna que ya existe — ignorar
+            self._conn.rollback()
+            return _EmptyCursor()
+        except pg_errors.UndefinedTable:
+            # Tabla que aún no existe — ignorar (init_db usa IF NOT EXISTS)
+            self._conn.rollback()
+            return _EmptyCursor()
 
         if is_insert:
             row = self._cur.fetchone()
