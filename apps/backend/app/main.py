@@ -559,27 +559,47 @@ def on_startup():
     from db_adapter import USE_POSTGRES
     if USE_POSTGRES:
         # En modo PostgreSQL el schema ya existe (aplicado vía supabase/schema.sql).
-        # Verificamos la conexión con hasta 3 intentos para tolerar retrasos de Supabase.
+        # Verificamos credenciales con una conexión directa (no del pool) para no
+        # interferir con el pool de requests. Hasta 3 intentos; si falla, solo advertimos
+        # — el primer request real revelará si hay un problema real de configuración.
         import time as _time
-        last_exc = None
+        import psycopg2 as _psycopg2
+        from db_adapter import _PG_HOST, _PG_USER, _PG_PASSWORD, _PG_DBNAME, _PG_PORT
+        from db_adapter import _USE_PG_PARAMS, _DATABASE_URL as _DB_URL
+
+        verified = False
         for attempt in range(1, 4):
             try:
-                from db_adapter import get_pg_connection
-                conn = get_pg_connection()
-                conn.execute("SELECT 1")
-                conn.close()
-                logger.info("Conexión PostgreSQL verificada correctamente (intento %d).", attempt)
-                app.state.runtime["db_health"] = {"ok": True, "backend": "postgresql"}
-                last_exc = None
+                if _USE_PG_PARAMS:
+                    _tc = _psycopg2.connect(
+                        host=_PG_HOST,
+                        user=_PG_USER or "postgres",
+                        password=_PG_PASSWORD,
+                        dbname=_PG_DBNAME,
+                        port=_PG_PORT,
+                        connect_timeout=8,
+                        sslmode="require",
+                    )
+                elif _DB_URL:
+                    dsn = _DB_URL if "sslmode" in _DB_URL else _DB_URL.rstrip("/") + "?sslmode=require"
+                    _tc = _psycopg2.connect(dsn, connect_timeout=8)
+                else:
+                    break  # sin config — se detectará en el primer request
+                _tc.close()
+                verified = True
+                logger.info("Conexión PostgreSQL verificada (intento %d).", attempt)
                 break
             except Exception as exc:
-                last_exc = exc
-                logger.warning("Intento %d/3 fallido al conectar a PostgreSQL: %s", attempt, exc)
+                logger.warning("Startup PG intento %d/3 fallido: %s", attempt, exc)
                 if attempt < 3:
                     _time.sleep(3)
-        if last_exc is not None:
-            logger.error("No se pudo conectar a PostgreSQL tras 3 intentos.")
-            raise RuntimeError("Fallo de conexión a PostgreSQL.") from last_exc
+
+        if not verified:
+            logger.warning(
+                "No se pudo verificar PostgreSQL al arrancar — continuando de todas formas. "
+                "El primer request revelará si hay un problema de configuración."
+            )
+        app.state.runtime["db_health"] = {"ok": verified, "backend": "postgresql"}
         return
 
     try:
