@@ -1,6 +1,39 @@
-# React + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Frontend React + Vite de Contabilidad Morsa.
+
+## Desarrollo local
+
+```bash
+npm install
+npm run dev
+```
+
+## Variables de entorno
+
+Usa `.env` o variables del proveedor de hosting.
+
+Ejemplo:
+
+```text
+VITE_API_URL=https://tu-api.example.com
+```
+
+Si `VITE_API_URL` no está definida, en desarrollo local el frontend usa `http://127.0.0.1:8010` cuando corre en `127.0.0.1:5175`.
+
+## Build
+
+```bash
+npm run build
+```
+
+## Vercel
+
+Configuración recomendada:
+
+- Root Directory: `apps/frontend`
+- Build Command: `npm run build`
+- Output Directory: `dist`
 
 Currently, two official plugins are available:
 

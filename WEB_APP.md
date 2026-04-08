@@ -59,6 +59,7 @@ El build de Windows ahora está pensado para una sola app:
 - compila React
 - empaqueta el backend con el frontend ya compilado
 - abre la aplicación en el navegador del sistema
+- reaprovecha la instancia ya abierta y se apaga sola por inactividad al cerrar el navegador
 - usa SQLite local persistente
 - ejecuta `smoke_test.py` antes de empaquetar
 - valida que el `frontend/dist` sí quedó embebido

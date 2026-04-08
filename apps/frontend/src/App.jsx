@@ -1,10 +1,12 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
-const API_URL =
+const ENV_API_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
+const API_URL = ENV_API_URL || (
   typeof window !== "undefined" && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname) && window.location.port === "5175"
     ? "http://127.0.0.1:8010"
-    : "";
+    : ""
+);
 
 const MONTH_NAMES = [
   "Enero","Febrero","Marzo","Abril","Mayo","Junio",
@@ -36,6 +38,7 @@ const EMPTY_SYSTEM_SUMMARY = {
   app_data_dir: "",
 };
 const PUBLIC_API_PATHS = new Set(["/api/auth/session"]);
+const DESKTOP_HEARTBEAT_INTERVAL_MS = 10000;
 let apiSession = null;
 let apiSessionPromise = null;
 
@@ -97,12 +100,12 @@ async function ensureApiSession() {
       res = await fetchWithTimeout(`${API_URL}/api/auth/session`, {}, 15000);
     } catch (err) {
       if (err?.name === "AbortError") {
-        throw new Error("La autenticación local tardó demasiado. Intenta de nuevo.");
+        throw new Error("La autenticación tardó demasiado. Intenta de nuevo.");
       }
-      throw new Error("No fue posible conectar con el servidor local.");
+      throw new Error("No fue posible conectar con el servidor API.");
     }
     if (!res.ok) {
-      await parseApiError(res, "No fue posible iniciar la sesión local.");
+      await parseApiError(res, "No fue posible iniciar la sesión.");
     }
     const payload = await res.json().catch(() => null);
     const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
@@ -139,7 +142,7 @@ async function fetchApi(path, options = {}, timeoutMs = 15000, allowRetry = true
     if (err?.name === "AbortError") {
       throw new Error("La solicitud tardó demasiado. Intenta de nuevo.");
     }
-    throw new Error("No fue posible conectar con el servidor local.");
+    throw new Error("No fue posible conectar con el servidor API.");
   }
 }
 
@@ -2789,6 +2792,45 @@ function App() {
       .then(setNomina)
       .catch((err) => setError(`Nómina: ${err.message}`));
   }, [periodoNomina]);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer = null;
+
+    const sendWindowClose = () => {
+      try {
+        const url = `${API_URL}/api/app/window-close`;
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(url);
+          return;
+        }
+        fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+      } catch {
+        // No bloquear cierre de ventana por errores del runtime local.
+      }
+    };
+
+    const heartbeat = async () => {
+      try {
+        await fetchApi("/api/app/heartbeat", { method: "POST" }, 10000);
+      } catch {
+        // Si el backend se está cerrando, evitamos contaminar la UI con un error global.
+      } finally {
+        if (!stopped) {
+          timer = window.setTimeout(heartbeat, DESKTOP_HEARTBEAT_INTERVAL_MS);
+        }
+      }
+    };
+
+    timer = window.setTimeout(heartbeat, DESKTOP_HEARTBEAT_INTERVAL_MS);
+    window.addEventListener("pagehide", sendWindowClose);
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+      window.removeEventListener("pagehide", sendWindowClose);
+      sendWindowClose();
+    };
+  }, []);
 
   return (
     <div className="app-shell">

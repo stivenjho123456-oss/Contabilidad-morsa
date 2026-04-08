@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
+import os
 import socket
 import sys
 import threading
@@ -41,6 +43,9 @@ from app.main import app
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8010
 LOG_FILE = get_log_dir() / "launcher.log"
+PORT_SCAN_LIMIT = 20
+IDLE_TIMEOUT_SECONDS = float(os.getenv("MORSA_DESKTOP_IDLE_TIMEOUT", "45"))
+WINDOW_CLOSE_GRACE_SECONDS = float(os.getenv("MORSA_DESKTOP_CLOSE_GRACE", "4"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +56,43 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("contabilidad_morsa.launcher")
+
+
+class DesktopLifecycleController:
+    def __init__(self, idle_timeout_seconds: float, close_grace_seconds: float):
+        self.idle_timeout_seconds = max(idle_timeout_seconds, 0)
+        self.close_grace_seconds = max(close_grace_seconds, 0)
+        self._last_activity_at = time.monotonic()
+        self._has_client_activity = False
+        self._shutdown_deadline = None
+        self._lock = threading.Lock()
+        self.ready = threading.Event()
+
+    def mark_ready(self):
+        self.ready.set()
+
+    def touch_activity(self, source: str = "request"):
+        with self._lock:
+            self._last_activity_at = time.monotonic()
+            if source != "launcher-health":
+                self._has_client_activity = True
+            self._shutdown_deadline = None
+
+    def schedule_shutdown(self, reason: str = "window-closed", delay_seconds: float | None = None):
+        with self._lock:
+            delay = self.close_grace_seconds if delay_seconds is None else max(delay_seconds, 0)
+            self._shutdown_deadline = (time.monotonic() + delay, reason)
+
+    def shutdown_reason(self):
+        with self._lock:
+            now = time.monotonic()
+            if self._shutdown_deadline and now >= self._shutdown_deadline[0]:
+                return self._shutdown_deadline[1]
+            if self.ready.is_set() and self._has_client_activity and self.idle_timeout_seconds:
+                idle_for = now - self._last_activity_at
+                if idle_for >= self.idle_timeout_seconds:
+                    return f"inactividad ({int(idle_for)}s)"
+        return None
 
 
 def show_error_dialog(title: str, message: str):
@@ -64,7 +106,7 @@ def show_error_dialog(title: str, message: str):
     print(f"{title}: {message}", file=sys.stderr)
 
 
-def find_available_port(host: str = HOST, preferred: int = DEFAULT_PORT, limit: int = 20) -> int:
+def find_available_port(host: str = HOST, preferred: int = DEFAULT_PORT, limit: int = PORT_SCAN_LIMIT) -> int:
     for port in range(preferred, preferred + limit):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -73,26 +115,63 @@ def find_available_port(host: str = HOST, preferred: int = DEFAULT_PORT, limit: 
     raise RuntimeError("No se encontró un puerto libre para iniciar la aplicación.")
 
 
-def wait_until_up(url: str, timeout: float = 20.0) -> bool:
+def _health_payload(url: str, timeout: float = 1.0):
+    with urllib.request.urlopen(f"{url}/health", timeout=timeout) as response:
+        if response.status != 200:
+            return None
+        payload = json.loads(response.read().decode("utf-8"))
+        if payload.get("service") != "contabilidad-morsa-api" or payload.get("status") != "ok":
+            return None
+        return payload
+
+
+def find_running_instance(host: str = HOST, preferred: int = DEFAULT_PORT, limit: int = PORT_SCAN_LIMIT) -> int | None:
+    for port in range(preferred, preferred + limit):
+        try:
+            payload = _health_payload(f"http://{host}:{port}", timeout=0.5)
+        except Exception:
+            continue
+        if payload:
+            return port
+    return None
+
+
+def wait_until_up(url: str, timeout: float = 20.0, controller: DesktopLifecycleController | None = None) -> bool:
     started = time.time()
     while time.time() - started < timeout:
         try:
-            with urllib.request.urlopen(f"{url}/health", timeout=1) as response:
-                if response.status == 200:
-                    return True
+            payload = _health_payload(url, timeout=1)
+            if payload:
+                if controller:
+                    controller.mark_ready()
+                    controller.touch_activity("launcher-health")
+                return True
         except Exception:
             time.sleep(0.25)
     return False
 
 
-def run_server(port: int):
+def monitor_server_lifecycle(server: uvicorn.Server, controller: DesktopLifecycleController):
+    controller.ready.wait(timeout=30)
+    while not server.should_exit:
+        reason = controller.shutdown_reason()
+        if reason:
+            logger.info("Cerrando aplicación por %s", reason)
+            server.should_exit = True
+            return
+        time.sleep(1)
+
+
+def run_server(port: int, controller: DesktopLifecycleController):
     config = uvicorn.Config(app, host=HOST, port=port, log_level="info")
     server = uvicorn.Server(config)
+    watcher = threading.Thread(target=monitor_server_lifecycle, args=(server, controller), daemon=True)
+    watcher.start()
     server.run()
 
 
-def open_browser_when_ready(url: str):
-    if wait_until_up(url):
+def open_browser_when_ready(url: str, controller: DesktopLifecycleController):
+    if wait_until_up(url, controller=controller):
         try:
             webbrowser.open(url)
         except Exception:
@@ -106,12 +185,24 @@ def open_browser_when_ready(url: str):
 
 def main():
     try:
+        running_port = find_running_instance()
+        if running_port is not None:
+            url = f"http://{HOST}:{running_port}"
+            logger.info("Instancia existente detectada en %s. Reabriendo navegador.", url)
+            webbrowser.open(url)
+            return
+
+        controller = DesktopLifecycleController(
+            idle_timeout_seconds=IDLE_TIMEOUT_SECONDS,
+            close_grace_seconds=WINDOW_CLOSE_GRACE_SECONDS,
+        )
+        app.state.desktop_controller = controller
         port = find_available_port()
         url = f"http://{HOST}:{port}"
         logger.info("Iniciando Contabilidad Morsa en %s", url)
-        browser_thread = threading.Thread(target=open_browser_when_ready, args=(url,), daemon=True)
+        browser_thread = threading.Thread(target=open_browser_when_ready, args=(url, controller), daemon=True)
         browser_thread.start()
-        run_server(port)
+        run_server(port, controller)
     except Exception as exc:
         logger.exception("Fallo al iniciar la aplicación.")
         show_error_dialog(

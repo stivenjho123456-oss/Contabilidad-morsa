@@ -28,6 +28,18 @@ FRONTEND_DIST_DIR = ROOT_DIR / "apps" / "frontend" / "dist"
 if str(DESKTOP_APP_DIR) not in sys.path:
     sys.path.insert(0, str(DESKTOP_APP_DIR))
 
+# ── Adaptador de base de datos (PostgreSQL o SQLite) ─────────────────────────
+# Si DATABASE_URL está definido (Supabase/Render), usamos PostgreSQL.
+# De lo contrario, el módulo database.py usa SQLite local.
+from db_adapter import USE_POSTGRES  # noqa: E402
+if USE_POSTGRES:
+    # Parchamos get_connection en database para que use PostgreSQL
+    import db_adapter as _db_adapter  # noqa: E402
+    import database as _db_module      # noqa: E402
+    _db_module.get_connection = _db_adapter.get_pg_connection
+    logger_pre = logging.getLogger("contabilidad_morsa.boot")
+    logger_pre.info("Modo PostgreSQL activado (DATABASE_URL presente)")
+
 from app_paths import get_app_data_dir, get_log_dir  # noqa: E402
 
 from database import (  # noqa: E402
@@ -101,6 +113,7 @@ DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:5175",
     "http://127.0.0.1:8010",
     "http://localhost:8010",
+    # En producción se sobreescribe con MORSA_ALLOWED_ORIGINS (dominio de Vercel)
 ]
 ALLOWED_SUPPORT_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 ALLOWED_SUPPORT_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg", "image/webp"}
@@ -257,6 +270,28 @@ def _startup_state():
     }
 
 
+def _desktop_controller():
+    return getattr(app.state, "desktop_controller", None)
+
+
+def _touch_desktop_activity(source: str = "request"):
+    controller = _desktop_controller()
+    if controller and hasattr(controller, "touch_activity"):
+        try:
+            controller.touch_activity(source)
+        except Exception:
+            logger.exception("No se pudo actualizar la actividad de la app de escritorio.")
+
+
+def _schedule_desktop_shutdown(reason: str = "window-closed", delay_seconds: float | None = None):
+    controller = _desktop_controller()
+    if controller and hasattr(controller, "schedule_shutdown"):
+        try:
+            controller.schedule_shutdown(reason, delay_seconds)
+        except Exception:
+            logger.exception("No se pudo programar el cierre de la app de escritorio.")
+
+
 def _apply_security_headers(response, *, is_api: bool):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -271,6 +306,7 @@ def _public_request_path(path: str):
         path == "/"
         or path == "/health"
         or path == "/api/auth/session"
+        or path == "/api/app/window-close"
         or (ENABLE_DOCS and path in {"/docs", "/openapi.json"})
         or path == "/favicon.svg"
         or path == "/icons.svg"
@@ -498,6 +534,8 @@ def _system_counts():
 async def auth_and_security_middleware(request: Request, call_next):
     path = request.url.path
     is_api = path.startswith("/api/")
+    if path != "/health":
+        _touch_desktop_activity(path)
     if request.method != "OPTIONS" and is_api and not _public_request_path(path):
         incoming_token = request.headers.get(API_TOKEN_HEADER, "")
         expected_token = _current_session_token()
@@ -549,6 +587,18 @@ def auth_session():
             "issued_at": runtime["session_issued_at"],
         }
     )
+
+
+@app.post("/api/app/heartbeat")
+def app_heartbeat():
+    _touch_desktop_activity("heartbeat")
+    return _api_ok({"alive": True})
+
+
+@app.post("/api/app/window-close")
+def app_window_close():
+    _schedule_desktop_shutdown("window-close", delay_seconds=4)
+    return _api_ok({"shutdown_scheduled": True})
 
 
 @app.exception_handler(HTTPException)

@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: contabilidad-morsa-api
+    runtime: python
+    region: oregon
+
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r apps/backend/requirements.txt
+      pip install -r ContabilidadMorsa/requirements.txt
+
+    startCommand: >
+      uvicorn apps.backend.app.main:app
+      --host 0.0.0.0
+      --port $PORT
+      --workers 1
+      --log-level info
+
+    healthCheckPath: /api/health
+
+    envVars:
+      # ── Base de datos ──────────────────────────────────────────
+      - key: DATABASE_URL
+        # Pega aquí la connection string de Supabase (Transaction Pooler)
+        # Formato: postgresql://postgres.[ref]:[password]@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+        sync: false
+
+      # ── Seguridad ──────────────────────────────────────────────
+      - key: MORSA_API_SECRET
+        generateValue: true
+
+      # ── CORS: dominio del frontend en Vercel ───────────────────
+      # Ejemplo: https://contabilidad-morsa.vercel.app
+      - key: MORSA_ALLOWED_ORIGINS
+        sync: false
+
+      # ── Opcionales ─────────────────────────────────────────────
+      - key: MORSA_ENABLE_DOCS
+        value: "0"
+      - key: PYTHONUNBUFFERED
+        value: "1"

@@ -77,6 +77,12 @@ def run():
     system = assert_ok(api_get("/api/system/summary"))
     assert "counts" in system
 
+    heartbeat = assert_ok(api_post("/api/app/heartbeat"))
+    assert heartbeat["alive"] is True
+
+    window_close = client.post("/api/app/window-close")
+    assert window_close.status_code == 200, window_close.text
+
     caja_hoy = assert_ok(api_get("/api/caja/hoy"))
     assert {"fecha", "movimientos", "saldo_inicial_operativo", "saldo_actual", "detalle_movimientos", "apertura"} <= set(caja_hoy.keys())
     assert {"entradas", "salidas", "resumen"} <= set(caja_hoy["detalle_movimientos"].keys())

@@ -3,3 +3,5 @@ uvicorn>=0.35.0
 openpyxl>=3.1.5
 httpx>=0.28.1
 python-multipart>=0.0.20
+# PostgreSQL (Supabase) — solo requerido cuando DATABASE_URL está configurado
+psycopg2-binary>=2.9.10
