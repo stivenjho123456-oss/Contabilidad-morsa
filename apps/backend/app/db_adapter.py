@@ -135,7 +135,19 @@ class _PgConnectionWrapper:
     def execute(self, sql: str, params=None):
         stripped = sql.strip()
 
-        # PRAGMA → ignorar silenciosamente y devolver cursor vacío
+        # PRAGMA table_info(tabla) → consultar information_schema de PostgreSQL
+        # _ensure_column usa: [row[1] for row in conn.execute('PRAGMA table_info(t)').fetchall()]
+        pragma_match = re.match(r"PRAGMA\s+table_info\((\w+)\)", stripped, re.IGNORECASE)
+        if pragma_match:
+            table_name = pragma_match.group(1)
+            self._cur.execute(
+                "SELECT ordinal_position, column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = %s ORDER BY ordinal_position",
+                (table_name,)
+            )
+            return _PgCursorWrapper(self._cur)
+
+        # Otros PRAGMA → ignorar silenciosamente y devolver cursor vacío
         if stripped.upper().startswith("PRAGMA"):
             return _EmptyCursor()
 
