@@ -55,16 +55,39 @@ const PUBLIC_API_PATHS = new Set([
 ]);
 let apiSession = null;
 
+function buildViewCacheKey(view, { month, year, periodoNomina }) {
+  switch (view) {
+    case "dashboard":
+      return `dashboard:${year}-${String(month).padStart(2, "0")}`;
+    case "ingresos":
+      return `ingresos:${year}-${String(month).padStart(2, "0")}`;
+    case "egresos":
+      return `egresos:${year}-${String(month).padStart(2, "0")}`;
+    case "reportes":
+      return `reportes:${year}-${String(month).padStart(2, "0")}`;
+    case "nomina":
+      return `nomina:${periodoNomina || "__default__"}`;
+    case "proveedores":
+      return "proveedores";
+    case "caja":
+      return "caja";
+    default:
+      return view;
+  }
+}
+
 function money(value) {
   return `$ ${Number(value || 0).toLocaleString("es-CO", { maximumFractionDigits: 0 })}`;
 }
 
-function applyLoadTask(task, result, failures, { preserveOnError = false } = {}) {
+function applyLoadTask(task, result, failures, { preserveOnError = false, applyToState = true } = {}) {
   if (result.status === "fulfilled") {
-    task.apply(result.value);
+    if (applyToState) {
+      task.apply(result.value);
+    }
     return;
   }
-  if (!preserveOnError) {
+  if (applyToState && !preserveOnError) {
     task.apply(task.fallback);
   }
   failures.push(`${task.label}: ${result.reason?.message || "error"}`);
@@ -2699,7 +2722,10 @@ function App() {
   const [notice,  setNotice]  = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [showRefreshingHint, setShowRefreshingHint] = useState(false);
   const loadedViewsRef = useRef({});
+  const viewCacheRef = useRef({});
+  const requestSeqRef = useRef(0);
   const dbHealthKnown = typeof systemSummary?.db_health?.ok === "boolean";
   const dbHealthy = systemSummary?.db_health?.ok !== false;
 
@@ -2712,7 +2738,44 @@ function App() {
     setNotice({ message, tone });
   }
 
+  const applyCachedViewState = useCallback((view, snapshot) => {
+    if (!snapshot) return;
+    if (snapshot.systemSummary) {
+      setSystemSummary(snapshot.systemSummary);
+    }
+    switch (view) {
+      case "dashboard":
+        if ("dashboard" in snapshot) setDashboard(snapshot.dashboard);
+        break;
+      case "proveedores":
+        if ("proveedores" in snapshot) setProveedores(snapshot.proveedores);
+        break;
+      case "ingresos":
+        if ("ingresos" in snapshot) setIngresos(snapshot.ingresos);
+        if ("cierreMensual" in snapshot) setCierreMensual(snapshot.cierreMensual);
+        if ("analisisIngresos" in snapshot) setAnalisisIngresos(snapshot.analisisIngresos);
+        break;
+      case "egresos":
+        if ("proveedores" in snapshot) setProveedores(snapshot.proveedores);
+        if ("egresos" in snapshot) setEgresos(snapshot.egresos);
+        if ("cierreMensual" in snapshot) setCierreMensual(snapshot.cierreMensual);
+        break;
+      case "nomina":
+        if ("nomina" in snapshot) setNomina(snapshot.nomina);
+        break;
+      case "reportes":
+        if ("reporte" in snapshot) setReporte(snapshot.reporte);
+        if ("cierreMensual" in snapshot) setCierreMensual(snapshot.cierreMensual);
+        if ("auditoria" in snapshot) setAuditoria(snapshot.auditoria);
+        break;
+      default:
+        break;
+    }
+  }, []);
+
   const loadData = useCallback(async (view, { silent = false } = {}) => {
+    const cacheKey = buildViewCacheKey(view, { month, year, periodoNomina });
+    const requestId = ++requestSeqRef.current;
     if (!getStoredApiSession()?.token) {
       setLoading(false);
       setRefreshing(false);
@@ -2728,6 +2791,7 @@ function App() {
           promise: request("/api/system/summary"),
           fallback: EMPTY_SYSTEM_SUMMARY,
           apply: setSystemSummary,
+          store: (value) => ({ systemSummary: value }),
         },
       ];
 
@@ -2738,6 +2802,7 @@ function App() {
             promise: request(`/api/dashboard?mes=${month}&ano=${year}`),
             fallback: null,
             apply: setDashboard,
+            store: (value) => ({ dashboard: value }),
           });
           break;
         case "proveedores":
@@ -2746,6 +2811,7 @@ function App() {
             promise: request("/api/proveedores"),
             fallback: [],
             apply: setProveedores,
+            store: (value) => ({ proveedores: value }),
           });
           break;
         case "ingresos":
@@ -2755,18 +2821,21 @@ function App() {
               promise: request(`/api/ingresos?mes=${month}&ano=${year}`),
               fallback: [],
               apply: setIngresos,
+              store: (value) => ({ ingresos: value }),
             },
             {
               label: "Estado de cierre",
               promise: request(`/api/reportes/cierre?mes=${month}&ano=${year}&include_details=false`),
               fallback: null,
               apply: (value) => setCierreMensual(value?.cierre || null),
+              store: (value) => ({ cierreMensual: value?.cierre || null }),
             },
             {
               label: "Análisis ingresos",
               promise: request("/api/ingresos/analisis"),
               fallback: null,
               apply: setAnalisisIngresos,
+              store: (value) => ({ analisisIngresos: value }),
             }
           );
           break;
@@ -2777,18 +2846,21 @@ function App() {
               promise: request("/api/proveedores"),
               fallback: [],
               apply: setProveedores,
+              store: (value) => ({ proveedores: value }),
             },
             {
               label: "Egresos",
               promise: request(`/api/egresos?mes=${month}&ano=${year}`),
               fallback: [],
               apply: setEgresos,
+              store: (value) => ({ egresos: value }),
             },
             {
               label: "Estado de cierre",
               promise: request(`/api/reportes/cierre?mes=${month}&ano=${year}&include_details=false`),
               fallback: null,
               apply: (value) => setCierreMensual(value?.cierre || null),
+              store: (value) => ({ cierreMensual: value?.cierre || null }),
             }
           );
           break;
@@ -2807,6 +2879,7 @@ function App() {
                 setPeriodoNomina((current) => current || value.periodos[0]);
               }
             },
+            store: (value) => ({ nomina: value }),
           });
           break;
         case "reportes":
@@ -2819,12 +2892,17 @@ function App() {
                 setReporte(value);
                 setCierreMensual(value?.cierre || null);
               },
+              store: (value) => ({
+                reporte: value,
+                cierreMensual: value?.cierre || null,
+              }),
             },
             {
               label: "Auditoría",
               promise: request("/api/auditoria?limit=80"),
               fallback: [],
               apply: setAuditoria,
+              store: (value) => ({ auditoria: value }),
             }
           );
           break;
@@ -2833,22 +2911,39 @@ function App() {
       }
 
       const baseResults = await Promise.allSettled(loadTasks.map((task) => task.promise));
+      const isLatestRequest = requestId === requestSeqRef.current;
       const failures = [];
+      const snapshotPatch = {};
       baseResults.forEach((result, index) => {
-        applyLoadTask(loadTasks[index], result, failures, { preserveOnError: silent });
+        const task = loadTasks[index];
+        if (result.status === "fulfilled" && task.store) {
+          Object.assign(snapshotPatch, task.store(result.value));
+        }
+        applyLoadTask(task, result, failures, {
+          preserveOnError: silent,
+          applyToState: isLatestRequest,
+        });
       });
       if (baseResults.some((result) => result.status === "fulfilled")) {
-        loadedViewsRef.current[view] = true;
+        viewCacheRef.current[cacheKey] = {
+          ...(viewCacheRef.current[cacheKey] || {}),
+          ...snapshotPatch,
+        };
+        loadedViewsRef.current[cacheKey] = true;
       }
 
-      if (failures.length) {
+      if (isLatestRequest && failures.length) {
         setError(failures.join(" | "));
       }
     } catch (err) {
-      setError(err.message);
+      if (requestId === requestSeqRef.current) {
+        setError(err.message);
+      }
     } finally {
-      if (silent) setRefreshing(false);
-      else setLoading(false);
+      if (requestId === requestSeqRef.current) {
+        if (silent) setRefreshing(false);
+        else setLoading(false);
+      }
     }
   }, [month, year, periodoNomina]);
 
@@ -2902,9 +2997,23 @@ function App() {
 
   useEffect(() => {
     if (!authSession?.token) return;
-    const shouldRefresh = activeView === "caja" || !!loadedViewsRef.current[activeView];
+    const cacheKey = buildViewCacheKey(activeView, { month, year, periodoNomina });
+    const cached = viewCacheRef.current[cacheKey];
+    if (cached) {
+      applyCachedViewState(activeView, cached);
+    }
+    const shouldRefresh = Object.keys(loadedViewsRef.current).length > 0 || Boolean(cached);
     loadData(activeView, { silent: shouldRefresh });
-  }, [authSession?.token, activeView, month, year, periodoNomina, loadData]);
+  }, [authSession?.token, activeView, month, year, periodoNomina, applyCachedViewState, loadData]);
+
+  useEffect(() => {
+    if (!refreshing) {
+      setShowRefreshingHint(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowRefreshingHint(true), 180);
+    return () => window.clearTimeout(timer);
+  }, [refreshing]);
 
   useEffect(() => {
     if (!notice) return;
@@ -2915,6 +3024,8 @@ function App() {
   useEffect(() => {
     const handleAuthInvalid = () => {
       loadedViewsRef.current = {};
+      viewCacheRef.current = {};
+      requestSeqRef.current += 1;
       setAuthSession(null);
       setActiveView("dashboard");
       setDashboard(null);
@@ -2940,6 +3051,8 @@ function App() {
     setError("");
     try {
       loadedViewsRef.current = {};
+      viewCacheRef.current = {};
+      requestSeqRef.current += 1;
       const session = await request("/api/auth/login", {
         method: "POST",
         body: JSON.stringify(credentials),
@@ -2964,6 +3077,8 @@ function App() {
     setError("");
     try {
       loadedViewsRef.current = {};
+      viewCacheRef.current = {};
+      requestSeqRef.current += 1;
       const session = await request("/api/auth/bootstrap", {
         method: "POST",
         body: JSON.stringify(payload),
@@ -2992,6 +3107,8 @@ function App() {
       // Si el token ya no es válido, igual cerramos sesión localmente.
     } finally {
       loadedViewsRef.current = {};
+      viewCacheRef.current = {};
+      requestSeqRef.current += 1;
       resetApiSession();
       setAuthSession(null);
       setActiveView("dashboard");
@@ -3074,7 +3191,7 @@ function App() {
       </aside>
 
       <main className="workspace">
-        {refreshing && <div className="loading-inline">Actualizando datos...</div>}
+        {showRefreshingHint && <div className="loading-inline">Actualizando datos...</div>}
         {!loading && dbHealthKnown && !dbHealthy && (
           <div className="system-banner system-banner-bad">
             La base de datos reporta estado degradado. Revisa el log en {systemSummary?.log_file || "logs"} y la conexión de PostgreSQL.
