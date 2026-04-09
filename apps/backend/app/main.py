@@ -5,6 +5,7 @@ import secrets
 import sys
 import sqlite3
 import tempfile
+import threading
 import time
 from datetime import datetime
 from io import BytesIO
@@ -130,6 +131,8 @@ MAX_IMPORT_SIZE_BYTES = 25 * 1024 * 1024
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 SYSTEM_SUMMARY_CACHE_SECONDS = 20
 RUNTIME_STATUS_CACHE_SECONDS = 30
+RUNTIME_QUERY_CACHE_SECONDS = 20
+_RUNTIME_CACHE_LOCK = threading.RLock()
 LOG_HANDLERS = [logging.StreamHandler()]
 try:
     LOG_HANDLERS.insert(0, logging.FileHandler(LOG_FILE, encoding="utf-8"))
@@ -278,6 +281,9 @@ def _startup_state():
         "schema_status_checked_at": 0.0,
         "system_summary_cache": None,
         "system_summary_cache_at": 0.0,
+        "query_cache": {},
+        "query_inflight": {},
+        "query_cache_version": 0,
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "log_file": str(LOG_FILE),
         "deployment_mode": "cloud",
@@ -305,6 +311,66 @@ def _refresh_runtime_status(runtime: dict[str, Any], *, force: bool = False):
         runtime["schema_status"] = _current_schema_status()
         runtime["schema_status_checked_at"] = now
     return runtime["db_health"], runtime["schema_status"]
+
+
+def _runtime_state():
+    runtime = getattr(app.state, "runtime", None)
+    if runtime is None:
+        runtime = _startup_state()
+        app.state.runtime = runtime
+    return runtime
+
+
+def _invalidate_runtime_caches():
+    runtime = _runtime_state()
+    with _RUNTIME_CACHE_LOCK:
+        runtime["query_cache"].clear()
+        runtime["query_cache_version"] = runtime.get("query_cache_version", 0) + 1
+        runtime["system_summary_cache"] = None
+        runtime["system_summary_cache_at"] = 0.0
+
+
+def _cached_runtime_query(cache_key: tuple[Any, ...], loader, ttl_seconds: int = RUNTIME_QUERY_CACHE_SECONDS):
+    runtime = _runtime_state()
+    cache_version = None
+    while True:
+        with _RUNTIME_CACHE_LOCK:
+            current_version = runtime.get("query_cache_version", 0)
+            entry = runtime["query_cache"].get(cache_key)
+            if entry and entry["version"] == current_version and (time.monotonic() - entry["stored_at"]) < ttl_seconds:
+                return entry["value"]
+            inflight = runtime["query_inflight"].get(cache_key)
+            if inflight is None:
+                inflight = threading.Event()
+                runtime["query_inflight"][cache_key] = inflight
+                is_loader = True
+                cache_version = current_version
+            else:
+                is_loader = False
+        if is_loader:
+            break
+        inflight.wait()
+
+    try:
+        value = loader()
+    except Exception:
+        with _RUNTIME_CACHE_LOCK:
+            pending = runtime["query_inflight"].pop(cache_key, None)
+            if pending is not None:
+                pending.set()
+        raise
+
+    with _RUNTIME_CACHE_LOCK:
+        if runtime.get("query_cache_version", 0) == cache_version:
+            runtime["query_cache"][cache_key] = {
+                "value": value,
+                "stored_at": time.monotonic(),
+                "version": cache_version,
+            }
+        pending = runtime["query_inflight"].pop(cache_key, None)
+        if pending is not None:
+            pending.set()
+    return value
 
 
 def _apply_security_headers(response, *, is_api: bool):
@@ -563,6 +629,7 @@ def _system_counts():
 async def auth_and_security_middleware(request: Request, call_next):
     path = request.url.path
     is_api = path.startswith("/api/")
+    mutating_api = is_api and request.method in {"POST", "PUT", "PATCH", "DELETE"} and not path.startswith("/api/auth/")
     if request.method != "OPTIONS" and is_api and not _public_request_path(path):
         incoming_token = _parse_bearer_token(request.headers.get(API_TOKEN_HEADER, ""))
         session = resolve_session(incoming_token)
@@ -574,6 +641,8 @@ async def auth_and_security_middleware(request: Request, call_next):
         request.state.current_user = session["user"]
         request.state.auth_session = session
     response = await call_next(request)
+    if mutating_api and response.status_code < 400:
+        _invalidate_runtime_caches()
     return _apply_security_headers(response, is_api=is_api)
 
 
@@ -761,16 +830,25 @@ def dashboard(
     include_cierre: bool = Query(default=False),
 ):
     _validate_period(mes, ano)
-    stats = get_dashboard_stats(mes=mes, ano=ano)
-    payload = {"stats": stats}
-    if include_cierre and mes and ano:
-        payload["cierre"] = get_cierre_mensual(mes, ano)
+    payload = _cached_runtime_query(
+        ("dashboard", mes, ano, include_cierre),
+        lambda: {
+            "stats": get_dashboard_stats(mes=mes, ano=ano),
+            **({"cierre": get_cierre_mensual(mes, ano)} if include_cierre and mes and ano else {}),
+        },
+    )
     return _api_ok(payload)
 
 
 @app.get("/api/proveedores")
 def proveedores(search: str = ""):
-    return _api_ok(get_proveedores(search))
+    normalized_search = search.strip().lower()
+    return _api_ok(
+        _cached_runtime_query(
+            ("proveedores", normalized_search),
+            lambda: get_proveedores(search),
+        )
+    )
 
 
 @app.get("/api/proveedores/{prov_id}")
@@ -813,72 +891,78 @@ def ingresos(
     ano: int | None = Query(default=None),
 ):
     _validate_period(mes, ano)
-    return _api_ok(get_ingresos(mes=mes, ano=ano))
+    return _api_ok(
+        _cached_runtime_query(
+            ("ingresos", mes, ano),
+            lambda: get_ingresos(mes=mes, ano=ano),
+        )
+    )
 
 
 @app.get("/api/ingresos/analisis")
 def ingresos_analisis():
     """Totales por canal agrupados por mes — para el panel de análisis de ingresos."""
-    conn = get_connection()
-    try:
-        rows = conn.execute("""
-            SELECT
-                strftime('%Y-%m', fecha) AS mes,
-                COUNT(*)                AS dias,
-                COALESCE(SUM(caja), 0)       AS caja,
-                COALESCE(SUM(bancos), 0)     AS bancos,
-                COALESCE(SUM(tarjeta_cr), 0) AS tarjeta_cr,
-                COALESCE(SUM(caja + bancos + tarjeta_cr), 0) AS total
-            FROM ingresos
-            WHERE fecha IS NOT NULL
-            GROUP BY mes
-            ORDER BY mes
-        """).fetchall()
-        meses = [dict(r) for r in rows]
+    def _load_analisis():
+        conn = get_connection()
+        try:
+            rows = conn.execute("""
+                SELECT
+                    strftime('%Y-%m', fecha) AS mes,
+                    COUNT(*)                AS dias,
+                    COALESCE(SUM(caja), 0)       AS caja,
+                    COALESCE(SUM(bancos), 0)     AS bancos,
+                    COALESCE(SUM(tarjeta_cr), 0) AS tarjeta_cr,
+                    COALESCE(SUM(caja + bancos + tarjeta_cr), 0) AS total
+                FROM ingresos
+                WHERE fecha IS NOT NULL
+                GROUP BY mes
+                ORDER BY mes
+            """).fetchall()
+            meses = [dict(r) for r in rows]
 
-        # totales globales por canal
-        totales = conn.execute("""
-            SELECT
-                COALESCE(SUM(caja), 0)       AS caja,
-                COALESCE(SUM(bancos), 0)     AS bancos,
-                COALESCE(SUM(tarjeta_cr), 0) AS tarjeta_cr,
-                COALESCE(SUM(caja + bancos + tarjeta_cr), 0) AS total,
-                COUNT(DISTINCT strftime('%Y-%m', fecha))      AS meses_con_datos
-            FROM ingresos
-            WHERE fecha IS NOT NULL
-        """).fetchone()
-        n = max(totales["meses_con_datos"], 1)
+            totales = conn.execute("""
+                SELECT
+                    COALESCE(SUM(caja), 0)       AS caja,
+                    COALESCE(SUM(bancos), 0)     AS bancos,
+                    COALESCE(SUM(tarjeta_cr), 0) AS tarjeta_cr,
+                    COALESCE(SUM(caja + bancos + tarjeta_cr), 0) AS total,
+                    COUNT(DISTINCT strftime('%Y-%m', fecha))      AS meses_con_datos
+                FROM ingresos
+                WHERE fecha IS NOT NULL
+            """).fetchone()
+            n = max(totales["meses_con_datos"], 1)
 
-        canales = [
-            {
-                "canal": "Caja",
-                "total": totales["caja"],
-                "promedio_mensual": round(totales["caja"] / n),
-                "pct": round(totales["caja"] / max(totales["total"], 1) * 100, 1),
-            },
-            {
-                "canal": "Bancos",
-                "total": totales["bancos"],
-                "promedio_mensual": round(totales["bancos"] / n),
-                "pct": round(totales["bancos"] / max(totales["total"], 1) * 100, 1),
-            },
-            {
-                "canal": "Tarjeta CR",
-                "total": totales["tarjeta_cr"],
-                "promedio_mensual": round(totales["tarjeta_cr"] / n),
-                "pct": round(totales["tarjeta_cr"] / max(totales["total"], 1) * 100, 1),
-            },
-        ]
-        canales.sort(key=lambda c: c["total"], reverse=True)
+            canales = [
+                {
+                    "canal": "Caja",
+                    "total": totales["caja"],
+                    "promedio_mensual": round(totales["caja"] / n),
+                    "pct": round(totales["caja"] / max(totales["total"], 1) * 100, 1),
+                },
+                {
+                    "canal": "Bancos",
+                    "total": totales["bancos"],
+                    "promedio_mensual": round(totales["bancos"] / n),
+                    "pct": round(totales["bancos"] / max(totales["total"], 1) * 100, 1),
+                },
+                {
+                    "canal": "Tarjeta CR",
+                    "total": totales["tarjeta_cr"],
+                    "promedio_mensual": round(totales["tarjeta_cr"] / n),
+                    "pct": round(totales["tarjeta_cr"] / max(totales["total"], 1) * 100, 1),
+                },
+            ]
+            canales.sort(key=lambda c: c["total"], reverse=True)
+            return {
+                "canales": canales,
+                "meses": meses,
+                "total_global": totales["total"],
+                "meses_con_datos": totales["meses_con_datos"],
+            }
+        finally:
+            conn.close()
 
-        return _api_ok({
-            "canales": canales,
-            "meses": meses,
-            "total_global": totales["total"],
-            "meses_con_datos": totales["meses_con_datos"],
-        })
-    finally:
-        conn.close()
+    return _api_ok(_cached_runtime_query(("ingresos_analisis",), _load_analisis, ttl_seconds=30))
 
 
 @app.get("/api/ingresos/{ingreso_id}")
@@ -916,29 +1000,38 @@ def remove_ingreso(ingreso_id: int):
 
 @app.get("/api/caja/hoy")
 def caja_hoy():
-    from datetime import date as _date
-    today = _date.today().strftime("%Y-%m-%d")
-    cuadre = get_cuadre_caja_by_fecha(today)
-    detalle = get_caja_movimientos_detalle(today)
-    movs = detalle["resumen"]
-    saldo_sugerido = get_saldo_inicial_sugerido(today)
-    apertura = get_caja_apertura_context(today)
-    saldo_operativo = float(cuadre["saldo_inicial"]) if cuadre else float(saldo_sugerido or 0)
-    saldo_actual = round(saldo_operativo + float(movs["ingresos_caja"] or 0) - float(movs["egresos_caja"] or 0), 2)
-    saldo_contado = cuadre.get("saldo_real") if cuadre else None
-    diferencia_arqueo = round(float(saldo_contado) - saldo_actual, 2) if saldo_contado is not None else None
-    return _api_ok({
-        "fecha": today,
-        "cuadre": cuadre,
-        "movimientos": movs,
-        "saldo_inicial_sugerido": saldo_sugerido,
-        "saldo_inicial_operativo": saldo_operativo,
-        "saldo_actual": saldo_actual,
-        "saldo_contado": saldo_contado,
-        "diferencia_arqueo": diferencia_arqueo,
-        "detalle_movimientos": detalle,
-        "apertura": apertura,
-    })
+    def _load_caja_hoy():
+        from datetime import date as _date
+        today = _date.today().strftime("%Y-%m-%d")
+        cuadre = get_cuadre_caja_by_fecha(today)
+        detalle = get_caja_movimientos_detalle(today)
+        movs = detalle["resumen"]
+        saldo_sugerido = get_saldo_inicial_sugerido(today)
+        apertura = get_caja_apertura_context(today)
+        saldo_operativo = float(cuadre["saldo_inicial"]) if cuadre else float(saldo_sugerido or 0)
+        saldo_actual = round(saldo_operativo + float(movs["ingresos_caja"] or 0) - float(movs["egresos_caja"] or 0), 2)
+        saldo_contado = cuadre.get("saldo_real") if cuadre else None
+        diferencia_arqueo = round(float(saldo_contado) - saldo_actual, 2) if saldo_contado is not None else None
+        return {
+            "fecha": today,
+            "cuadre": cuadre,
+            "movimientos": movs,
+            "saldo_inicial_sugerido": saldo_sugerido,
+            "saldo_inicial_operativo": saldo_operativo,
+            "saldo_actual": saldo_actual,
+            "saldo_contado": saldo_contado,
+            "diferencia_arqueo": diferencia_arqueo,
+            "detalle_movimientos": detalle,
+            "apertura": apertura,
+        }
+
+    return _api_ok(
+        _cached_runtime_query(
+            ("caja_hoy",),
+            _load_caja_hoy,
+            ttl_seconds=10,
+        )
+    )
 
 
 @app.get("/api/caja")
@@ -947,7 +1040,12 @@ def cuadres_caja(
     ano: int | None = Query(default=None),
 ):
     _validate_period(mes, ano)
-    return _api_ok(get_cuadres_caja(mes=mes, ano=ano))
+    return _api_ok(
+        _cached_runtime_query(
+            ("caja", mes, ano),
+            lambda: get_cuadres_caja(mes=mes, ano=ano),
+        )
+    )
 
 
 @app.get("/api/caja/ajustes")
@@ -956,7 +1054,12 @@ def caja_ajustes(
     ano: int | None = Query(default=None),
 ):
     _validate_period(mes, ano)
-    return _api_ok(get_caja_ajustes(mes=mes, ano=ano))
+    return _api_ok(
+        _cached_runtime_query(
+            ("caja_ajustes", mes, ano),
+            lambda: get_caja_ajustes(mes=mes, ano=ano),
+        )
+    )
 
 
 @app.get("/api/caja/{cuadre_id}")
@@ -1010,7 +1113,11 @@ def egresos(
     search: str = "",
 ):
     _validate_period(mes, ano)
-    rows = get_egresos(mes=mes, ano=ano, tipo=tipo, search=search)
+    normalized_search = search.strip().lower()
+    rows = _cached_runtime_query(
+        ("egresos", mes, ano, tipo or "", normalized_search),
+        lambda: get_egresos(mes=mes, ano=ano, tipo=tipo, search=search),
+    )
     return _api_ok([_serialize_egreso(row) for row in rows])
 
 
@@ -1021,7 +1128,13 @@ def egreso_detail(egreso_id: int):
 
 @app.get("/api/egresos-meta")
 def egresos_meta():
-    return _api_ok({"tipos_gasto": get_tipos_gasto_distintos()})
+    return _api_ok(
+        _cached_runtime_query(
+            ("egresos_meta",),
+            lambda: {"tipos_gasto": get_tipos_gasto_distintos()},
+            ttl_seconds=60,
+        )
+    )
 
 
 @app.post("/api/egresos")
@@ -1099,7 +1212,13 @@ def get_egreso_soporte(egreso_id: int):
 
 @app.get("/api/nomina")
 def nomina(periodo: str | None = Query(default=None), search: str = ""):
-    return _api_ok(get_nomina_bundle(periodo=periodo, search=search))
+    normalized_search = search.strip().lower()
+    return _api_ok(
+        _cached_runtime_query(
+            ("nomina", periodo or "", normalized_search),
+            lambda: get_nomina_bundle(periodo=periodo, search=search),
+        )
+    )
 
 
 @app.post("/api/nomina/asistencia")
@@ -1164,24 +1283,37 @@ def sync_nomina(payload: SyncNominaPayload):
 @app.get("/api/reportes/cierre")
 def cierre(mes: int = Query(...), ano: int = Query(...), include_details: bool = Query(default=True)):
     _validate_period(mes, ano)
-    periodo = period_from_month_year(mes, ano)
-    cierre_data = get_cierre_mensual(mes, ano)
-    if not include_details:
-        return _api_ok({"cierre": cierre_data})
-    egresos_rows = get_egresos(mes=mes, ano=ano)
-    return _api_ok({
-        "cierre": cierre_data,
-        "ingresos": get_ingresos(mes=mes, ano=ano),
-        "egresos": [_serialize_egreso(row) for row in egresos_rows],
-        "nomina": get_nomina_resumen(periodo=periodo),
-        "novedades": get_nomina_novedades(periodo=periodo),
-        "seg_social": get_nomina_seg_social(periodo=periodo),
-    })
+    def _load_cierre():
+        periodo = period_from_month_year(mes, ano)
+        cierre_data = get_cierre_mensual(mes, ano)
+        if not include_details:
+            return {"cierre": cierre_data}
+        egresos_rows = get_egresos(mes=mes, ano=ano)
+        return {
+            "cierre": cierre_data,
+            "ingresos": get_ingresos(mes=mes, ano=ano),
+            "egresos": [_serialize_egreso(row) for row in egresos_rows],
+            "nomina": get_nomina_resumen(periodo=periodo),
+            "novedades": get_nomina_novedades(periodo=periodo),
+            "seg_social": get_nomina_seg_social(periodo=periodo),
+        }
+
+    return _api_ok(
+        _cached_runtime_query(
+            ("reportes_cierre", mes, ano, include_details),
+            _load_cierre,
+        )
+    )
 
 
 @app.get("/api/cierres")
 def cierres():
-    return _api_ok(list_cierres_mensuales())
+    return _api_ok(
+        _cached_runtime_query(
+            ("cierres",),
+            list_cierres_mensuales,
+        )
+    )
 
 
 @app.post("/api/cierres/cerrar")
@@ -1205,7 +1337,13 @@ def reabrir_mes(payload: CierreMensualPayload):
 
 @app.get("/api/auditoria")
 def auditoria(limit: int = Query(default=120, ge=1, le=500)):
-    return _api_ok([_serialize_audit_entry(row) for row in get_auditoria(limit=limit)])
+    return _api_ok(
+        _cached_runtime_query(
+            ("auditoria", limit),
+            lambda: [_serialize_audit_entry(row) for row in get_auditoria(limit=limit)],
+            ttl_seconds=15,
+        )
+    )
 
 
 @app.post("/api/import/excel")
