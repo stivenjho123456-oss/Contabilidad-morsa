@@ -101,6 +101,10 @@ def _session_response(user: dict, token: str, expires_at: str):
     }
 
 
+def bootstrap_admin_env_configured():
+    return bool(BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD)
+
+
 def _issue_session(user: dict, *, user_agent: str = "", ip_address: str = ""):
     cleanup_auth_sessions()
     token = secrets.token_urlsafe(32)
@@ -143,7 +147,7 @@ def bootstrap_admin_account(username: str, full_name: str, password: str, *, use
 def ensure_bootstrap_admin_from_env():
     if not auth_bootstrap_required():
         return None
-    if not BOOTSTRAP_ADMIN_USERNAME or not BOOTSTRAP_ADMIN_PASSWORD:
+    if not bootstrap_admin_env_configured():
         return None
     user = create_auth_user(
         BOOTSTRAP_ADMIN_USERNAME,

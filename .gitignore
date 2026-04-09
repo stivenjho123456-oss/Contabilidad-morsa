@@ -20,10 +20,6 @@ ContabilidadMorsa/contabilidad.db
 ContabilidadMorsa/backups/
 
 client_secret_*.json
-ENERO 2026.xlsx
-FEBRERO 2026.xlsx
-Ingresos_*.xlsx
-Nomina_FEBRERO_2026.xlsx
-relaciones-empresa-fondo.xlsx
-seguimiento-por-analista.xlsx
-seguimiento-por-empresa.xlsx
+*.xlsx
+*.xlsm
+*.xls

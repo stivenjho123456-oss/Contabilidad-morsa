@@ -6,8 +6,6 @@ import openpyxl
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app_paths import default_writable_excel_path
-from backup_manager import create_backup_if_due
 from database import (
     clear_nomina,
     init_db,
@@ -17,9 +15,7 @@ from database import (
     write_transaction,
 )
 
-
-EXCEL_NOMINA_FILENAME = 'NOMINA DE  FEBRERO -2026.xlsx'
-EXCEL_NOMINA_PATH = str(default_writable_excel_path(EXCEL_NOMINA_FILENAME))
+EXCEL_NOMINA_PATH = ''
 
 
 def clean_text(value):
@@ -216,15 +212,15 @@ def parse_asistencia(ws, periodo, origen_archivo, conn):
 
 
 def migrate_nomina(path=EXCEL_NOMINA_PATH):
-    if not os.path.exists(path):
-        print(f'ERROR: No se encontro el archivo de nomina:\n  {path}')
+    source_path = (path or EXCEL_NOMINA_PATH or '').strip()
+    if not source_path or not os.path.exists(source_path):
+        print(f'ERROR: No se encontro el archivo de nomina:\n  {source_path or "(sin ruta)"}')
         sys.exit(1)
 
     init_db()
-    create_backup_if_due('pre_nomina_import', max_age_minutes=15)
-    wb = openpyxl.load_workbook(path, data_only=True)
+    wb = openpyxl.load_workbook(source_path, data_only=True)
     periodo = detect_periodo(wb)
-    origen_archivo = os.path.basename(path)
+    origen_archivo = os.path.basename(source_path)
 
     with write_transaction(checkpoint=True, checkpoint_mode='TRUNCATE') as conn:
         clear_nomina(origen_archivo=origen_archivo, conn=conn)
@@ -239,4 +235,4 @@ def migrate_nomina(path=EXCEL_NOMINA_PATH):
 
 
 if __name__ == '__main__':
-    migrate_nomina()
+    migrate_nomina(sys.argv[1] if len(sys.argv) > 1 else None)

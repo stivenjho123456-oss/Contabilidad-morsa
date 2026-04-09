@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import os
 import tempfile
 
 from fastapi.testclient import TestClient
@@ -7,18 +8,16 @@ from fastapi.testclient import TestClient
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-DESKTOP_APP = ROOT / "ContabilidadMorsa"
+CORE_APP_DIR = ROOT / "ContabilidadMorsa"
 FRONTEND_DIST = ROOT / "apps" / "frontend" / "dist" / "index.html"
-if str(DESKTOP_APP) not in sys.path:
-    sys.path.insert(0, str(DESKTOP_APP))
+TEST_APPDATA = Path(tempfile.mkdtemp(prefix="morsa-backend-test-"))
+os.environ["MORSA_ALLOW_SQLITE"] = "1"
+os.environ["MORSA_RUNTIME_DIR"] = str(TEST_APPDATA)
+if str(CORE_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_APP_DIR))
 
 import database  # noqa: E402
-import backup_manager  # noqa: E402
 
-TEST_APPDATA = Path(tempfile.mkdtemp(prefix="morsa-backend-test-"))
-database.DB_PATH = str(TEST_APPDATA / "contabilidad-test.db")
-backup_manager.DB_PATH = database.DB_PATH
-backup_manager.BACKUP_DIR = TEST_APPDATA / "backups"
 database.init_db()
 
 from app.main import app
@@ -93,12 +92,6 @@ def run():
 
     system = assert_ok(api_get("/api/system/summary"))
     assert "counts" in system
-
-    heartbeat = assert_ok(api_post("/api/app/heartbeat"))
-    assert heartbeat["alive"] is True
-
-    window_close = client.post("/api/app/window-close")
-    assert window_close.status_code == 200, window_close.text
 
     caja_hoy = assert_ok(api_get("/api/caja/hoy"))
     assert {"fecha", "movimientos", "saldo_inicial_operativo", "saldo_actual", "detalle_movimientos", "apertura"} <= set(caja_hoy.keys())
@@ -219,27 +212,6 @@ def run():
     assert reabrir_mes.status_code == 200, reabrir_mes.text
     auditoria = assert_ok(api_get("/api/auditoria?limit=20"))
     assert isinstance(auditoria, list)
-
-    backups = assert_ok(api_get("/api/backups"))
-    assert isinstance(backups, list)
-
-    backup_create = api_post("/api/backups", json={"reason": "smoke"})
-    assert backup_create.status_code == 200, backup_create.text
-    backup_created = backup_create.json()["data"]
-
-    backup_download = api_get(f"/api/backups/download?name={backup_created['name']}")
-    assert backup_download.status_code == 200, backup_download.text
-    assert backup_created["name"] in (backup_download.headers.get("content-disposition") or "")
-    assert len(backup_download.content) > 0
-
-    restore_response = api_post("/api/backups/restore", json={"name": backup_created["name"]})
-    assert restore_response.status_code == 200, restore_response.text
-
-    restore_file_response = api_post(
-        "/api/backups/restore-file",
-        files={"file": (backup_created["name"], backup_download.content, "application/octet-stream")},
-    )
-    assert restore_file_response.status_code == 200, restore_file_response.text
 
     export_ingresos = api_get("/api/export/ingresos?mes=3&ano=2026")
     assert export_ingresos.status_code == 200, export_ingresos.text

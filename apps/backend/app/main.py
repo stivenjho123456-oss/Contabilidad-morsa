@@ -4,6 +4,7 @@ import os
 import secrets
 import sys
 import sqlite3
+import tempfile
 from datetime import datetime
 from io import BytesIO
 from typing import Any
@@ -18,25 +19,26 @@ from pydantic import BaseModel, Field
 from starlette.status import HTTP_422_UNPROCESSABLE_CONTENT, HTTP_500_INTERNAL_SERVER_ERROR
 from starlette.requests import Request
 
-
-if getattr(sys, "frozen", False):
-    ROOT_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
-else:
-    ROOT_DIR = Path(__file__).resolve().parents[3]
-DESKTOP_APP_DIR = ROOT_DIR / "ContabilidadMorsa"
+ROOT_DIR = Path(__file__).resolve().parents[3]
+CORE_APP_DIR = ROOT_DIR / "ContabilidadMorsa"
 FRONTEND_DIST_DIR = ROOT_DIR / "apps" / "frontend" / "dist"
-if str(DESKTOP_APP_DIR) not in sys.path:
-    sys.path.insert(0, str(DESKTOP_APP_DIR))
+if str(CORE_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_APP_DIR))
 
 # Asegura que el directorio de este archivo esté en el path (necesario en Render)
 _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
 
-# ── Adaptador de base de datos (PostgreSQL o SQLite) ─────────────────────────
-# Si DATABASE_URL está definido (Supabase/Render), usamos PostgreSQL.
-# De lo contrario, el módulo database.py usa SQLite local.
-from db_adapter import USE_POSTGRES  # noqa: E402
+# ── Adaptador de base de datos (cloud-first) ─────────────────────────────────
+from db_adapter import (  # noqa: E402
+    ALLOW_SQLITE_FALLBACK,
+    USE_POSTGRES,
+    DatabaseSchemaError,
+    get_pg_database_health,
+    get_pg_schema_report,
+    require_pg_schema,
+)
 if USE_POSTGRES:
     # Parchamos get_connection en database para que use PostgreSQL
     import db_adapter as _db_adapter  # noqa: E402
@@ -45,12 +47,14 @@ if USE_POSTGRES:
     logger_pre = logging.getLogger("contabilidad_morsa.boot")
     logger_pre.info("Modo PostgreSQL activado (DATABASE_URL presente)")
 
-from app_paths import get_app_data_dir, get_log_dir  # noqa: E402
+from app_paths import get_log_dir  # noqa: E402
 
 from database import (  # noqa: E402
     AppValidationError,
-    DB_PATH,
+    auth_bootstrap_required,
+    create_archivo_blob,
     create_caja_ajuste,
+    delete_archivo_blob,
     delete_cuadre_caja,
     delete_egreso,
     delete_ingreso,
@@ -58,6 +62,7 @@ from database import (  # noqa: E402
     delete_nomina_novedad,
     delete_proveedor,
     get_auditoria,
+    get_archivo_blob,
     get_caja_ajustes,
     get_caja_apertura_context,
     get_connection,
@@ -100,21 +105,12 @@ from auth_service import (  # noqa: E402
     SESSION_SCHEME as API_TOKEN_SCHEME,
     auth_status as get_auth_status,
     authenticate_user,
+    bootstrap_admin_env_configured,
     bootstrap_admin_account,
     ensure_bootstrap_admin_from_env,
     resolve_session,
     revoke_session,
 )
-from backup_manager import (  # noqa: E402
-    auto_recover_database,
-    create_backup,
-    create_backup_if_due,
-    list_backups,
-    resolve_backup_name,
-    restore_backup,
-    restore_backup_by_name,
-)
-from app_paths import get_supports_dir  # noqa: E402
 import migrate_excel as migrate_excel_module  # noqa: E402
 import migrate_nomina as migrate_nomina_module  # noqa: E402
 
@@ -132,10 +128,8 @@ DEFAULT_ALLOWED_ORIGINS = [
 ALLOWED_SUPPORT_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 ALLOWED_SUPPORT_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg", "image/webp"}
 ALLOWED_IMPORT_EXTENSIONS = {".xlsx", ".xlsm"}
-ALLOWED_BACKUP_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 MAX_SUPPORT_SIZE_BYTES = 10 * 1024 * 1024
 MAX_IMPORT_SIZE_BYTES = 25 * 1024 * 1024
-MAX_BACKUP_SIZE_BYTES = 250 * 1024 * 1024
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 LOG_HANDLERS = [logging.StreamHandler()]
 try:
@@ -243,14 +237,6 @@ class SyncNominaPayload(BaseModel):
     periodo: str | None = None
 
 
-class BackupPayload(BaseModel):
-    reason: str = "manual"
-
-
-class BackupRestorePayload(BaseModel):
-    name: str
-
-
 class CierreMensualPayload(BaseModel):
     mes: int
     ano: int
@@ -287,39 +273,35 @@ def _sanitize_filename(value: str) -> str:
 
 def _startup_state():
     return {
-        "recovery": None,
-        "db_health": get_database_health(),
+        "db_health": None,
+        "schema_status": None,
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "log_file": str(LOG_FILE),
+        "deployment_mode": "cloud",
     }
 
 
-def _desktop_controller():
-    return getattr(app.state, "desktop_controller", None)
+def _current_db_health():
+    if USE_POSTGRES:
+        return get_pg_database_health()
+    return get_database_health()
 
 
-def _touch_desktop_activity(source: str = "request"):
-    controller = _desktop_controller()
-    if controller and hasattr(controller, "touch_activity"):
-        try:
-            controller.touch_activity(source)
-        except Exception:
-            logger.exception("No se pudo actualizar la actividad de la app de escritorio.")
-
-
-def _schedule_desktop_shutdown(reason: str = "window-closed", delay_seconds: float | None = None):
-    controller = _desktop_controller()
-    if controller and hasattr(controller, "schedule_shutdown"):
-        try:
-            controller.schedule_shutdown(reason, delay_seconds)
-        except Exception:
-            logger.exception("No se pudo programar el cierre de la app de escritorio.")
+def _current_schema_status():
+    if USE_POSTGRES:
+        return get_pg_schema_report()
+    return None
 
 
 def _apply_security_headers(response, *, is_api: bool):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    )
     if is_api:
         response.headers.setdefault("Cache-Control", "no-store")
     return response
@@ -332,8 +314,6 @@ def _public_request_path(path: str):
         or path == "/api/auth/status"
         or path == "/api/auth/login"
         or path == "/api/auth/bootstrap"
-        or path == "/api/app/heartbeat"
-        or path == "/api/app/window-close"
         or (ENABLE_DOCS and path in {"/docs", "/openapi.json"})
         or path == "/favicon.svg"
         or path == "/icons.svg"
@@ -358,45 +338,38 @@ def _client_ip(request: Request):
     return request.client.host if request.client else ""
 
 
-def _serialize_backup(info: dict[str, Any] | None):
-    if not info:
-        return None
-    return {
-        "id": info["name"],
-        "name": info["name"],
-        "size_bytes": info["size_bytes"],
-        "created_at": info["created_at"],
-        "created_label": info["created_label"],
-        "reason": info["reason"],
-    }
-
-
 def _serialize_db_health(info: dict[str, Any] | None):
     if not info:
         return None
     return {
+        "backend": info.get("backend", "postgresql"),
         "exists": info.get("exists", False),
         "size_bytes": info.get("size_bytes", 0),
         "ok": info.get("ok", False),
+        "connected": info.get("connected"),
+        "database": info.get("database"),
+        "server_version": info.get("server_version"),
         "integrity": info.get("integrity"),
         "error": info.get("error"),
     }
 
 
-def _serialize_recovery(info: dict[str, Any] | None):
+def _serialize_schema_status(info: dict[str, Any] | None):
     if not info:
         return None
     return {
-        "restored": bool(info.get("restored")),
-        "reason": info.get("reason"),
-        "backup": _serialize_backup(info.get("backup")) if info.get("backup") else None,
-        "health": _serialize_db_health(info.get("health")) if info.get("health") else None,
+        "backend": info.get("backend", "postgresql"),
+        "ok": info.get("ok", False),
+        "tables_checked": info.get("tables_checked", 0),
+        "missing_tables": info.get("missing_tables", []),
+        "missing_columns": info.get("missing_columns", {}),
+        "error": info.get("error"),
     }
 
 
 def _serialize_egreso(row: dict[str, Any]):
     data = dict(row)
-    data["has_support"] = bool(data.get("soporte_path"))
+    data["has_support"] = bool(data.get("support_file_id") or data.get("soporte_name"))
     data.pop("soporte_path", None)
     return data
 
@@ -413,23 +386,6 @@ def _sanitize_excel_value(value: Any):
     return value
 
 
-def _safe_support_path(stored_value: str | None):
-    raw = (stored_value or "").strip()
-    if not raw:
-        return None
-    try:
-        resolved = Path(raw).expanduser().resolve()
-    except OSError:
-        return None
-    supports_root = get_supports_dir().resolve()
-    if resolved != supports_root and supports_root not in resolved.parents:
-        logger.warning("Soporte fuera de directorio permitido bloqueado: %s", resolved)
-        return None
-    if not resolved.exists() or not resolved.is_file():
-        return None
-    return resolved
-
-
 def _validate_uploaded_filename(upload: UploadFile, allowed_extensions: set[str], allowed_content_types: set[str] | None = None):
     if not upload.filename:
         raise HTTPException(status_code=400, detail="Debes seleccionar un archivo.")
@@ -442,6 +398,32 @@ def _validate_uploaded_filename(upload: UploadFile, allowed_extensions: set[str]
         if content_type not in allowed_content_types:
             raise HTTPException(status_code=400, detail="El tipo MIME del archivo no está permitido.")
     return filename, suffix
+
+
+async def _read_uploaded_binary(
+    upload: UploadFile,
+    *,
+    allowed_extensions: set[str],
+    allowed_content_types: set[str] | None,
+    max_size_bytes: int,
+):
+    filename, _ = _validate_uploaded_filename(upload, allowed_extensions, allowed_content_types)
+    chunks: list[bytes] = []
+    total_size = 0
+    try:
+        while True:
+            chunk = await upload.read(UPLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            total_size += len(chunk)
+            if total_size > max_size_bytes:
+                raise HTTPException(status_code=400, detail=f"El archivo supera el límite de {max_size_bytes // (1024 * 1024)} MB.")
+            chunks.append(chunk)
+    finally:
+        await upload.close()
+    if total_size == 0:
+        raise HTTPException(status_code=400, detail="El archivo está vacío.")
+    return b"".join(chunks), filename, total_size, (upload.content_type or "application/octet-stream").lower()
 
 
 async def _persist_uploaded_file(
@@ -479,7 +461,7 @@ async def _persist_uploaded_file(
 
 
 async def _save_import_upload(upload: UploadFile, import_kind: str):
-    temp_dir = Path(DB_PATH).expanduser().resolve().parent / "imports" / import_kind
+    temp_dir = Path(tempfile.gettempdir()) / "contabilidad-morsa-imports" / import_kind
     prefix = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(6)}"
     target, filename, total_size = await _persist_uploaded_file(
         upload,
@@ -487,20 +469,6 @@ async def _save_import_upload(upload: UploadFile, import_kind: str):
         allowed_extensions=ALLOWED_IMPORT_EXTENSIONS,
         allowed_content_types=None,
         max_size_bytes=MAX_IMPORT_SIZE_BYTES,
-        prefix=prefix,
-    )
-    return target, filename, total_size
-
-
-async def _save_backup_upload(upload: UploadFile):
-    temp_dir = Path(DB_PATH).expanduser().resolve().parent / "imports" / "backup_restore"
-    prefix = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(6)}"
-    target, filename, total_size = await _persist_uploaded_file(
-        upload,
-        destination_dir=temp_dir,
-        allowed_extensions=ALLOWED_BACKUP_EXTENSIONS,
-        allowed_content_types=None,
-        max_size_bytes=MAX_BACKUP_SIZE_BYTES,
         prefix=prefix,
     )
     return target, filename, total_size
@@ -569,8 +537,6 @@ def _system_counts():
 async def auth_and_security_middleware(request: Request, call_next):
     path = request.url.path
     is_api = path.startswith("/api/")
-    if path != "/health":
-        _touch_desktop_activity(path)
     if request.method != "OPTIONS" and is_api and not _public_request_path(path):
         incoming_token = _parse_bearer_token(request.headers.get(API_TOKEN_HEADER, ""))
         session = resolve_session(incoming_token)
@@ -588,84 +554,30 @@ async def auth_and_security_middleware(request: Request, call_next):
 @app.on_event("startup")
 def on_startup():
     app.state.runtime = _startup_state()
-    from db_adapter import USE_POSTGRES
-    if USE_POSTGRES:
-        # En modo PostgreSQL el schema ya existe (aplicado vía supabase/schema.sql).
-        # Verificamos credenciales con una conexión directa (no del pool) para no
-        # interferir con el pool de requests. Hasta 3 intentos; si falla, solo advertimos
-        # — el primer request real revelará si hay un problema real de configuración.
-        import time as _time
-        import psycopg2 as _psycopg2
-        from db_adapter import _PG_HOST, _PG_USER, _PG_PASSWORD, _PG_DBNAME, _PG_PORT
-        from db_adapter import _USE_PG_PARAMS, _DATABASE_URL as _DB_URL
-
-        verified = False
-        for attempt in range(1, 4):
-            try:
-                if _USE_PG_PARAMS:
-                    _tc = _psycopg2.connect(
-                        host=_PG_HOST,
-                        user=_PG_USER or "postgres",
-                        password=_PG_PASSWORD,
-                        dbname=_PG_DBNAME,
-                        port=_PG_PORT,
-                        connect_timeout=8,
-                        sslmode="require",
-                    )
-                elif _DB_URL:
-                    dsn = _DB_URL if "sslmode" in _DB_URL else _DB_URL.rstrip("/") + "?sslmode=require"
-                    _tc = _psycopg2.connect(dsn, connect_timeout=8)
-                else:
-                    break  # sin config — se detectará en el primer request
-                _tc.close()
-                verified = True
-                logger.info("Conexión PostgreSQL verificada (intento %d).", attempt)
-                break
-            except Exception as exc:
-                logger.warning("Startup PG intento %d/3 fallido: %s", attempt, exc)
-                if attempt < 3:
-                    _time.sleep(3)
-
-        if not verified:
-            logger.warning(
-                "No se pudo verificar PostgreSQL al arrancar — continuando de todas formas. "
-                "El primer request revelará si hay un problema de configuración."
-            )
-        try:
-            init_db()  # Crea tablas si no existen (IF NOT EXISTS — seguro re-ejecutar)
-        except Exception:
-            logger.exception("init_db() en modo PostgreSQL falló — puede que falten tablas.")
-        try:
-            ensure_bootstrap_admin_from_env()
-        except Exception:
-            logger.exception("No se pudo verificar/bootstrappear el usuario inicial en PostgreSQL.")
-        app.state.runtime["db_health"] = {"ok": verified, "backend": "postgresql"}
-        return
+    if not USE_POSTGRES and not ALLOW_SQLITE_FALLBACK:
+        raise RuntimeError("Contabilidad Morsa quedó en modo cloud-only. Debes definir DATABASE_URL o PG_HOST/PG_PASSWORD.")
 
     try:
-        init_db()
-        ensure_bootstrap_admin_from_env()
-        health = get_database_health()
-        if not health["ok"]:
-            logger.error("La base de datos falló integrity_check: %s", health)
-            recovery = auto_recover_database()
-            app.state.runtime["recovery"] = recovery
-            if recovery["restored"]:
-                logger.warning("Base restaurada automáticamente desde backup: %s", recovery["backup"])
-                init_db()
-            else:
-                logger.error("No fue posible restaurar automáticamente la base: %s", recovery)
-        app.state.runtime["db_health"] = get_database_health()
-    except sqlite3.DatabaseError as exc:
-        logger.exception("Fallo de SQLite en startup")
-        recovery = auto_recover_database()
-        app.state.runtime["recovery"] = recovery
-        if recovery["restored"]:
-            logger.warning("Recuperación automática aplicada tras excepción SQLite.")
+        if USE_POSTGRES:
+            app.state.runtime["schema_status"] = require_pg_schema()
+            if auth_bootstrap_required() and not bootstrap_admin_env_configured():
+                raise RuntimeError(
+                    "El despliegue cloud requiere un administrador inicial por entorno. "
+                    "Define MORSA_ADMIN_USERNAME, MORSA_ADMIN_PASSWORD y MORSA_ADMIN_FULL_NAME antes del primer arranque."
+                )
+        else:
             init_db()
-            app.state.runtime["db_health"] = get_database_health()
-            return
+        ensure_bootstrap_admin_from_env()
+        app.state.runtime["db_health"] = _current_db_health()
+    except DatabaseSchemaError as exc:
+        logger.error("Esquema PostgreSQL inválido en startup: %s", exc)
+        raise RuntimeError(str(exc)) from exc
+    except sqlite3.DatabaseError as exc:
+        logger.exception("Fallo de base de datos en startup")
         raise RuntimeError("No fue posible iniciar la base de datos.") from exc
+    except Exception as exc:
+        logger.exception("Fallo general en startup")
+        raise RuntimeError("No fue posible iniciar la aplicación.") from exc
 
 
 @app.get("/api/auth/status")
@@ -724,18 +636,6 @@ def auth_logout(request: Request):
     return _api_ok(message="Sesión cerrada correctamente.")
 
 
-@app.post("/api/app/heartbeat")
-def app_heartbeat():
-    _touch_desktop_activity("heartbeat")
-    return _api_ok({"alive": True})
-
-
-@app.post("/api/app/window-close")
-def app_window_close():
-    _schedule_desktop_shutdown("window-close", delay_seconds=4)
-    return _api_ok({"shutdown_scheduled": True})
-
-
 @app.exception_handler(HTTPException)
 async def fastapi_http_exception_handler(_, exc: HTTPException):
     return JSONResponse(
@@ -772,38 +672,38 @@ async def unhandled_exception_handler(_, exc: Exception):
 @app.get("/health")
 def health():
     runtime = getattr(app.state, "runtime", _startup_state())
-    db_health = get_database_health()
+    db_health = _current_db_health()
+    schema_status = _current_schema_status()
     runtime["db_health"] = db_health
-    return {
+    runtime["schema_status"] = schema_status
+    is_healthy = bool(db_health.get("ok")) and (schema_status is None or bool(schema_status.get("ok")))
+    payload = {
         "status": "ok" if db_health["ok"] else "degraded",
         "service": "contabilidad-morsa-api",
         "version": app.version,
-        "db_exists": db_health["exists"],
         "db_health": _serialize_db_health(db_health),
-        "recovery": _serialize_recovery(runtime.get("recovery")),
+        "schema_status": _serialize_schema_status(schema_status),
+        "deployment_mode": runtime.get("deployment_mode", "cloud"),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
+    return JSONResponse(status_code=200 if is_healthy else 503, content=payload)
 
 
 @app.get("/api/system/summary")
 def system_summary():
-    db_file = Path(DB_PATH)
-    backups = list_backups()
     runtime = getattr(app.state, "runtime", _startup_state())
-    db_health = get_database_health()
+    db_health = _current_db_health()
+    schema_status = _current_schema_status()
     runtime["db_health"] = db_health
+    runtime["schema_status"] = schema_status
     return _api_ok(
         {
-            "db_exists": db_file.exists(),
-            "db_size_bytes": db_file.stat().st_size if db_file.exists() else 0,
             "db_health": _serialize_db_health(db_health),
+            "schema_status": _serialize_schema_status(schema_status),
             "counts": _system_counts(),
             "cierres": list_cierres_mensuales()[:24],
-            "backups": {
-                "total": len(backups),
-                "latest": _serialize_backup(backups[0]) if backups else None,
-            },
-            "recovery": _serialize_recovery(runtime.get("recovery")),
+            "deployment_mode": runtime.get("deployment_mode", "cloud"),
+            "storage_mode": "database",
         }
     )
 
@@ -1119,39 +1019,48 @@ def remove_egreso(egreso_id: int):
 @app.post("/api/egresos/{egreso_id}/soporte")
 async def upload_egreso_soporte(egreso_id: int, file: UploadFile = File(...)):
     row = _require_existing("egresos", egreso_id, "Egreso")
-    mes, ano = month_year_from_date(row["fecha"])
-    period_label = f"{ano}_{mes:02d}"
-    support_dir = get_supports_dir() / "egresos" / period_label
-    target, filename, total_size = await _persist_uploaded_file(
+    previous_file_id = row.get("support_file_id")
+    content, filename, total_size, content_type = await _read_uploaded_binary(
         file,
-        destination_dir=support_dir,
         allowed_extensions=ALLOWED_SUPPORT_EXTENSIONS,
         allowed_content_types=ALLOWED_SUPPORT_CONTENT_TYPES,
         max_size_bytes=MAX_SUPPORT_SIZE_BYTES,
-        prefix=f"egreso_{egreso_id}",
     )
+    mes, ano = month_year_from_date(row["fecha"])
+    file_id = create_archivo_blob(f"egreso:{egreso_id}", filename, content_type, total_size, content)
     updated = dict(row)
-    updated["soporte_path"] = str(target)
+    updated["soporte_path"] = ""
     updated["soporte_name"] = filename
+    updated["support_file_id"] = file_id
     try:
         save_egreso(updated, egreso_id=egreso_id)
+        if previous_file_id and previous_file_id != file_id:
+            delete_archivo_blob(previous_file_id)
         log_auditoria("egreso_soporte", "UPLOAD", egreso_id, period_from_month_year(mes, ano), row["razon_social"], {
             "soporte_name": filename,
             "size_bytes": total_size,
         })
         return _api_ok({"name": filename, "has_support": True}, "Soporte cargado correctamente.")
     except Exception as exc:
-        target.unlink(missing_ok=True)
+        delete_archivo_blob(file_id)
         _handle_validation(exc)
 
 
 @app.get("/api/egresos/{egreso_id}/soporte")
 def get_egreso_soporte(egreso_id: int):
     row = _require_existing("egresos", egreso_id, "Egreso")
-    support_path = _safe_support_path(row.get("soporte_path"))
-    if not support_path:
+    support_file_id = row.get("support_file_id")
+    if not support_file_id:
         raise HTTPException(status_code=404, detail="Este egreso no tiene soporte cargado.")
-    return FileResponse(support_path, filename=row.get("soporte_name") or support_path.name)
+    support_file = get_archivo_blob(support_file_id)
+    if not support_file or not support_file.get("content"):
+        raise HTTPException(status_code=404, detail="Este egreso no tiene soporte disponible.")
+    filename = _sanitize_filename(row.get("soporte_name") or support_file.get("file_name") or f"egreso_{egreso_id}")
+    return StreamingResponse(
+        BytesIO(bytes(support_file["content"])),
+        media_type=support_file.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @app.get("/api/nomina")
@@ -1222,9 +1131,8 @@ def remove_nomina_novedad(novedad_id: int):
 
 @app.post("/api/nomina/sync")
 def sync_nomina(payload: SyncNominaPayload):
-    create_backup_if_due("pre_nomina_sync", max_age_minutes=15)
     total = sync_nomina_to_egresos(periodo=payload.periodo)
-    getattr(app.state, "runtime", _startup_state())["db_health"] = get_database_health()
+    getattr(app.state, "runtime", _startup_state())["db_health"] = _current_db_health()
     return _api_ok({"egresos_generados": total}, "Nómina sincronizada con egresos.")
 
 
@@ -1272,68 +1180,12 @@ def auditoria(limit: int = Query(default=120, ge=1, le=500)):
     return _api_ok([_serialize_audit_entry(row) for row in get_auditoria(limit=limit)])
 
 
-@app.get("/api/backups")
-def backups():
-    return _api_ok([_serialize_backup(row) for row in list_backups()])
-
-
-@app.get("/api/backups/download")
-def download_backup(name: str = Query(..., min_length=1)):
-    try:
-        backup_path = resolve_backup_name(name)
-        return FileResponse(
-            backup_path,
-            media_type="application/octet-stream",
-            filename=backup_path.name,
-        )
-    except Exception as exc:
-        _handle_validation(exc)
-
-
-@app.post("/api/backups")
-def create_manual_backup(payload: BackupPayload):
-    try:
-        backup = create_backup(payload.reason or "manual")
-        return _api_ok(_serialize_backup(backup), "Backup creado.")
-    except Exception as exc:
-        _handle_validation(exc)
-
-
-@app.post("/api/backups/restore")
-def restore_selected_backup(payload: BackupRestorePayload):
-    try:
-        restored = restore_backup_by_name(payload.name)
-        getattr(app.state, "runtime", _startup_state())["db_health"] = get_database_health()
-        return _api_ok(_serialize_backup(restored), "Backup restaurado correctamente.")
-    except Exception as exc:
-        _handle_validation(exc)
-
-
-@app.post("/api/backups/restore-file")
-async def restore_uploaded_backup(file: UploadFile = File(...)):
-    source, source_name, total_size = await _save_backup_upload(file)
-    try:
-        restore_backup(str(source))
-        getattr(app.state, "runtime", _startup_state())["db_health"] = get_database_health()
-        return _api_ok(
-            {"source_name": source_name, "size_bytes": total_size},
-            "Backup externo restaurado correctamente.",
-        )
-    except Exception as exc:
-        _handle_validation(exc)
-    finally:
-        source.unlink(missing_ok=True)
-
-
 @app.post("/api/import/excel")
 async def import_excel(file: UploadFile = File(...)):
     source, source_name, total_size = await _save_import_upload(file, "excel")
-    previous_source = migrate_excel_module.EXCEL_PATH
     try:
-        create_backup_if_due("pre_excel_import", max_age_minutes=15)
-        migrate_excel_module.EXCEL_PATH = str(source)
-        migrate_excel_module.migrate()
-        getattr(app.state, "runtime", _startup_state())["db_health"] = get_database_health()
+        migrate_excel_module.migrate(path=str(source))
+        getattr(app.state, "runtime", _startup_state())["db_health"] = _current_db_health()
         return _api_ok(
             {"source_name": source_name, "size_bytes": total_size, "counts": _system_counts()},
             "Excel importado correctamente.",
@@ -1343,7 +1195,6 @@ async def import_excel(file: UploadFile = File(...)):
     except Exception as exc:
         _handle_validation(exc)
     finally:
-        migrate_excel_module.EXCEL_PATH = previous_source
         source.unlink(missing_ok=True)
 
 
@@ -1351,10 +1202,9 @@ async def import_excel(file: UploadFile = File(...)):
 async def import_nomina(file: UploadFile = File(...)):
     source, source_name, total_size = await _save_import_upload(file, "nomina")
     try:
-        create_backup_if_due("pre_nomina_import", max_age_minutes=15)
         migrate_nomina_module.migrate_nomina(path=str(source))
         generated = sync_nomina_to_egresos()
-        getattr(app.state, "runtime", _startup_state())["db_health"] = get_database_health()
+        getattr(app.state, "runtime", _startup_state())["db_health"] = _current_db_health()
         return _api_ok(
             {
                 "source_name": source_name,

@@ -18,6 +18,17 @@ CREATE TABLE IF NOT EXISTS proveedores (
     tipo             TEXT
 );
 
+-- ── Archivos embebidos ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS archivos (
+    id            SERIAL PRIMARY KEY,
+    scope         TEXT NOT NULL,
+    file_name     TEXT NOT NULL,
+    content_type  TEXT,
+    size_bytes    BIGINT NOT NULL DEFAULT 0,
+    content       BYTEA NOT NULL,
+    created_at    TEXT NOT NULL
+);
+
 -- ── Egresos ──────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS egresos (
     id                  SERIAL PRIMARY KEY,
@@ -34,6 +45,7 @@ CREATE TABLE IF NOT EXISTS egresos (
     observaciones       TEXT,
     soporte_path        TEXT,
     soporte_name        TEXT,
+    support_file_id     INTEGER REFERENCES archivos(id),
     source_module       TEXT,
     source_ref          TEXT,
     source_period       TEXT
@@ -192,6 +204,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 CREATE INDEX IF NOT EXISTS idx_egresos_fecha      ON egresos(fecha);
 CREATE INDEX IF NOT EXISTS idx_egresos_canal      ON egresos(canal_pago);
 CREATE INDEX IF NOT EXISTS idx_egresos_tipo       ON egresos(tipo_gasto);
+CREATE INDEX IF NOT EXISTS idx_egresos_support_id ON egresos(support_file_id);
 CREATE INDEX IF NOT EXISTS idx_ingresos_fecha     ON ingresos(fecha);
 CREATE INDEX IF NOT EXISTS idx_auditoria_created  ON auditoria(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cuadre_caja_fecha  ON cuadre_caja(fecha);
@@ -199,3 +212,4 @@ CREATE INDEX IF NOT EXISTS idx_caja_ajustes_fecha ON caja_ajustes(fecha);
 CREATE INDEX IF NOT EXISTS idx_nomina_periodo     ON nomina_resumen(periodo);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp  ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_archivos_scope     ON archivos(scope, created_at DESC);

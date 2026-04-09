@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 const ENV_API_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
@@ -21,7 +21,6 @@ const NAV_ITEMS = [
   { key: "nomina",      label: "Nomina" },
   { key: "proveedores", label: "Proveedores y Base" },
   { key: "reportes",    label: "Reportes" },
-  { key: "backups",     label: "Backups" },
 ];
 
 const TIPO_COLORS = [
@@ -31,11 +30,10 @@ const TIPO_COLORS = [
 
 const EMPTY_SYSTEM_SUMMARY = {
   counts: {},
-  backups: { total: 0, latest: null },
-  db_health: { ok: true, integrity: "ok", exists: false, size_bytes: 0 },
-  recovery: null,
+  db_health: { ok: true, integrity: "ok", exists: true, size_bytes: 0, backend: "postgresql" },
+  deployment_mode: "cloud",
+  storage_mode: "database",
   log_file: "",
-  app_data_dir: "",
 };
 const AUTH_STORAGE_KEY = "morsa_auth_session";
 const AUTH_INVALID_EVENT = "morsa-auth-invalid";
@@ -43,10 +41,7 @@ const PUBLIC_API_PATHS = new Set([
   "/api/auth/status",
   "/api/auth/login",
   "/api/auth/bootstrap",
-  "/api/app/heartbeat",
-  "/api/app/window-close",
 ]);
-const DESKTOP_HEARTBEAT_INTERVAL_MS = 10000;
 let apiSession = null;
 
 function money(value) {
@@ -214,32 +209,6 @@ async function downloadExcelFile(path, filename, setError, notify) {
   } catch (err) {
     if (err?.name === "AbortError") {
       setError("La exportación tardó demasiado. Intenta de nuevo.");
-      return;
-    }
-    setError(err.message);
-  }
-}
-
-async function downloadProtectedFile(path, filename, setError, notify, successMessage = "Archivo descargado correctamente") {
-  try {
-    const res = await fetchApi(path, {}, 30000);
-    if (!res.ok) {
-      await parseApiError(res, "No se pudo descargar el archivo");
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    notify(successMessage, "success");
-  } catch (err) {
-    if (err?.name === "AbortError") {
-      setError("La descarga tardó demasiado. Intenta de nuevo.");
       return;
     }
     setError(err.message);
@@ -545,7 +514,7 @@ function Toolbar({ title, subtitle, children }) {
   );
 }
 
-/** Colored action button matching desktop palette */
+/** Colored action button matching app palette */
 function TBtn({ tone = "navy", ...props }) {
   return <button className={`tbtn tbtn-${tone}`} {...props} />;
 }
@@ -556,7 +525,7 @@ function DashboardView({ year, month, setYear, setMonth, years, navigate, dashbo
   const stats = dashboard?.stats;
 
   return (
-    <div className="desktop-view">
+    <div className="page-view">
       <Toolbar title="Dashboard">
         <select value={month} onChange={(e) => setMonth(Number(e.target.value))}>
           {MONTH_NAMES.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
@@ -703,7 +672,7 @@ function ProveedoresView({ proveedores, reload, setError, notify }) {
   }
 
   return (
-    <div className="desktop-view">
+    <div className="page-view">
       <Toolbar
         title="Proveedores / Base de Datos"
         subtitle="Aquí puedes crear, editar y buscar proveedores. Usa el botón '+ Nuevo' para registrar uno."
@@ -1486,7 +1455,7 @@ function IngresosView({ ingresos, year, month, setYear, setMonth, years, periodC
   }
 
   return (
-    <div className="desktop-view">
+    <div className="page-view">
       <Toolbar title="Ingresos">
         <select value={month} onChange={(e) => setMonth(Number(e.target.value))}>
           {MONTH_NAMES.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
@@ -1955,7 +1924,7 @@ function EgresosView({ egresos, proveedores, year, month, setYear, setMonth, yea
   }
 
   return (
-    <div className="desktop-view">
+    <div className="page-view">
       <div className="egresos-hero">
         <div className="egresos-hero-card primary">
           <span className="eyebrow">Total visible</span>
@@ -2183,7 +2152,7 @@ function NominaView({ nomina, periodoNomina, setPeriodoNomina, reload, setError,
   }
 
   return (
-    <div className="desktop-view nomina-view">
+    <div className="page-view nomina-view">
       <div className="nomina-header">
         <div>
           <div className="nomina-breadcrumb">Morsa / Gestión de Nómina</div>
@@ -2588,7 +2557,7 @@ function ReportesView({ reporte, auditoria, year, month, setYear, setMonth, year
   }
 
   return (
-    <div className="desktop-view">
+    <div className="page-view">
       <Toolbar title="Reportes y Cierre">
         <select value={month} onChange={(e) => setMonth(Number(e.target.value))}>
           {MONTH_NAMES.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
@@ -2690,166 +2659,6 @@ function ReportesView({ reporte, auditoria, year, month, setYear, setMonth, year
   );
 }
 
-function BackupsView({ backups, reload, setError, notify }) {
-  const [selected, setSelected] = useState(null);
-  const [creating, setCreating] = useState(false);
-  const [restoring, setRestoring] = useState(false);
-  const [restoringFile, setRestoringFile] = useState(false);
-  const restoreFileInputRef = useRef(null);
-
-  async function handleCreateBackup() {
-    try {
-      setCreating(true);
-      await request("/api/backups", {
-        method: "POST",
-        body: JSON.stringify({ reason: "manual" }),
-      });
-      reload();
-      notify("Backup creado correctamente", "success");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function handleRestoreBackup() {
-    if (!selected?.name) {
-      setError("Selecciona un backup para restaurar.");
-      return;
-    }
-    if (!window.confirm(`Se restaurará el backup ${selected.name}. Se hará un respaldo previo automático. ¿Deseas continuar?`)) {
-      return;
-    }
-    try {
-      setRestoring(true);
-      await request("/api/backups/restore", {
-        method: "POST",
-        body: JSON.stringify({ name: selected.name }),
-      });
-      notify("Backup restaurado correctamente", "success");
-      reload();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setRestoring(false);
-    }
-  }
-
-  async function handleDownloadBackup(backup = selected) {
-    if (!backup?.name) {
-      setError("Selecciona un backup para descargar.");
-      return;
-    }
-    await downloadProtectedFile(
-      `/api/backups/download?name=${encodeURIComponent(backup.name)}`,
-      backup.name,
-      setError,
-      notify,
-      "Backup descargado correctamente",
-    );
-  }
-
-  function openRestoreFilePicker() {
-    restoreFileInputRef.current?.click();
-  }
-
-  async function handleRestoreFromFile(event) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (!window.confirm(`Se restaurará la base desde el archivo ${file.name}. Se hará un respaldo previo automático de la base actual. ¿Deseas continuar?`)) {
-      return;
-    }
-    try {
-      setRestoringFile(true);
-      const formData = new FormData();
-      formData.append("file", file);
-      await request("/api/backups/restore-file", {
-        method: "POST",
-        body: formData,
-      });
-      notify("Backup externo restaurado correctamente", "success");
-      reload();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setRestoringFile(false);
-    }
-  }
-
-  return (
-    <div className="desktop-view">
-      <Toolbar
-        title="Backups"
-        subtitle="Respaldos locales de la base SQLite. Puedes crear backups, descargarlos a una memoria USB y restaurar desde un archivo externo si hace falta."
-      >
-        <input
-          ref={restoreFileInputRef}
-          type="file"
-          accept=".db,.sqlite,.sqlite3"
-          className="backup-hidden-input"
-          onChange={handleRestoreFromFile}
-        />
-        <TBtn tone="purple" onClick={openRestoreFilePicker} disabled={restoringFile}>
-          {restoringFile ? "Restaurando Archivo..." : "Restaurar Desde Archivo"}
-        </TBtn>
-        <TBtn tone="green" onClick={() => handleDownloadBackup()} disabled={!selected?.name}>
-          Descargar Seleccionado
-        </TBtn>
-        <TBtn tone="blue" onClick={handleRestoreBackup} disabled={!selected?.name || restoring}>
-          {restoring ? "Restaurando..." : "Restaurar Seleccionado"}
-        </TBtn>
-        <TBtn tone="navy" onClick={handleCreateBackup} disabled={creating}>
-          {creating ? "Creando..." : "Crear Backup Ahora"}
-        </TBtn>
-      </Toolbar>
-
-      <div className="panel">
-        <MetricStrip
-          items={[
-            { label: "Backups", value: backups.length },
-            { label: "Último", value: backups[0]?.created_label || "Sin backups" },
-          ]}
-        />
-        <p className="backup-note">
-          Descarga el archivo `.db`, guárdalo en una memoria USB y luego usa "Restaurar Desde Archivo" para recuperarlo en esta app cuando lo necesites.
-        </p>
-        <DataTable
-          selectedId={selected?.name}
-          onSelect={setSelected}
-          rows={backups}
-          columns={[
-            { key: "name", label: "Archivo" },
-            { key: "reason", label: "Tipo" },
-            { key: "created_label", label: "Creado" },
-            { key: "size_bytes", label: "Tamaño", render: (v) => `${Math.round((Number(v || 0) / 1024) * 10) / 10} KB` },
-            {
-              key: "actions",
-              label: "Acciones",
-              render: (_, row) => (
-                <div className="table-actions">
-                  <button
-                    type="button"
-                    className="table-link-btn"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleDownloadBackup(row);
-                    }}
-                  >
-                    Descargar
-                  </button>
-                </div>
-              ),
-            },
-          ]}
-          maxHeight="calc(100vh - 300px)"
-        />
-      </div>
-    </div>
-  );
-}
-
 // ── App root ──────────────────────────────────────────────────────────────────
 
 function App() {
@@ -2866,7 +2675,6 @@ function App() {
   const [nomina,       setNomina]       = useState({ periodos: [], stats: {}, workflow: { steps: [] }, resumen: [], asistencia: [], asistencia_resumen: [], seg_social: [], novedades: [] });
   const [reporte,      setReporte]      = useState(null);
   const [auditoria,    setAuditoria]    = useState([]);
-  const [backups,          setBackups]          = useState([]);
   const [analisisIngresos, setAnalisisIngresos] = useState(null);
   const [periodoNomina, setPeriodoNomina] = useState("");
   const [authSession, setAuthSession] = useState(() => getStoredApiSession());
@@ -2907,7 +2715,6 @@ function App() {
         request(`/api/egresos?mes=${month}&ano=${year}`),
         request(`/api/reportes/cierre?mes=${month}&ano=${year}`),
         request("/api/auditoria?limit=80"),
-        request("/api/backups"),
         request("/api/ingresos/analisis"),
       ]);
       const failures = [];
@@ -2918,8 +2725,7 @@ function App() {
       applySettledResult(baseResults[4], setEgresos, [], "Egresos", failures);
       applySettledResult(baseResults[5], setReporte, null, "Reportes", failures);
       applySettledResult(baseResults[6], setAuditoria, [], "Auditoría", failures);
-      applySettledResult(baseResults[7], setBackups, [], "Backups", failures);
-      applySettledResult(baseResults[8], setAnalisisIngresos, null, "Análisis ingresos", failures);
+      applySettledResult(baseResults[7], setAnalisisIngresos, null, "Análisis ingresos", failures);
 
       const nomResult = await Promise.allSettled([
         request(
@@ -3096,45 +2902,6 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    let stopped = false;
-    let timer = null;
-
-    const sendWindowClose = () => {
-      try {
-        const url = `${API_URL}/api/app/window-close`;
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon(url);
-          return;
-        }
-        fetch(url, { method: "POST", keepalive: true }).catch(() => {});
-      } catch {
-        // No bloquear cierre de ventana por errores del runtime local.
-      }
-    };
-
-    const heartbeat = async () => {
-      try {
-        await fetchApi("/api/app/heartbeat", { method: "POST" }, 10000);
-      } catch {
-        // Si el backend se está cerrando, evitamos contaminar la UI con un error global.
-      } finally {
-        if (!stopped) {
-          timer = window.setTimeout(heartbeat, DESKTOP_HEARTBEAT_INTERVAL_MS);
-        }
-      }
-    };
-
-    timer = window.setTimeout(heartbeat, DESKTOP_HEARTBEAT_INTERVAL_MS);
-    window.addEventListener("pagehide", sendWindowClose);
-    return () => {
-      stopped = true;
-      if (timer) window.clearTimeout(timer);
-      window.removeEventListener("pagehide", sendWindowClose);
-      sendWindowClose();
-    };
-  }, []);
-
   if (authChecking) {
     return (
       <div className="auth-shell">
@@ -3191,22 +2958,17 @@ function App() {
             Cerrar sesión
           </button>
           <br />
-          SQLite local<br />FastAPI + React
+          Supabase Postgres<br />FastAPI + React
           <br />
-          Backups: {systemSummary?.backups?.total ?? 0}
+          Storage: {systemSummary?.storage_mode || "database"}
         </div>
       </aside>
 
       <main className="workspace">
         {refreshing && <div className="loading-inline">Actualizando datos...</div>}
-        {!loading && systemSummary?.recovery?.restored && (
-          <div className="system-banner system-banner-warn">
-            Se restauró automáticamente la base desde un backup válido al iniciar la app.
-          </div>
-        )}
         {!loading && dbHealthKnown && !dbHealthy && (
           <div className="system-banner system-banner-bad">
-            La base de datos reporta integridad degradada. Revisa Backups y el log en {systemSummary?.log_file || "logs"}.
+            La base de datos reporta estado degradado. Revisa el log en {systemSummary?.log_file || "logs"} y la conexión de PostgreSQL.
           </div>
         )}
         {error && (
@@ -3266,14 +3028,6 @@ function App() {
             auditoria={auditoria}
             reload={() => loadData({ silent: true })}
             setError={setError} notify={notify}
-          />
-        )}
-        {!loading && activeView === "backups" && (
-          <BackupsView
-            backups={backups}
-            reload={() => loadData({ silent: true })}
-            setError={setError}
-            notify={notify}
           />
         )}
       </main>

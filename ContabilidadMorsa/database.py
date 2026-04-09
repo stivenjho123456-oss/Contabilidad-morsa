@@ -343,6 +343,16 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
+
+            CREATE TABLE IF NOT EXISTS archivos (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope         TEXT NOT NULL,
+                file_name     TEXT NOT NULL,
+                content_type  TEXT,
+                size_bytes    INTEGER NOT NULL DEFAULT 0,
+                content       BYTEA NOT NULL,
+                created_at    TEXT NOT NULL
+            );
         ''')
         _ensure_column(conn, 'egresos', 'source_module', 'TEXT')
         _ensure_column(conn, 'egresos', 'source_ref', 'TEXT')
@@ -350,6 +360,7 @@ def init_db():
         _ensure_column(conn, 'egresos', 'factura_electronica', "TEXT DEFAULT 'NO'")
         _ensure_column(conn, 'egresos', 'soporte_path', 'TEXT')
         _ensure_column(conn, 'egresos', 'soporte_name', 'TEXT')
+        _ensure_column(conn, 'egresos', 'support_file_id', 'INTEGER')
         _ensure_column(conn, 'egresos', 'canal_pago', "TEXT DEFAULT 'Otro'")
         conn.commit()
     except Exception:
@@ -669,6 +680,61 @@ def revoke_auth_session(token_hash):
         conn.close()
 
 
+@serialized_write
+def create_archivo_blob(scope, file_name, content_type, size_bytes, content):
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            '''
+            INSERT INTO archivos (scope, file_name, content_type, size_bytes, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                _clean_text(scope) or 'general',
+                _clean_text(file_name) or 'archivo',
+                _clean_text(content_type),
+                int(size_bytes or 0),
+                bytes(content or b''),
+                datetime.now().isoformat(timespec='seconds'),
+            ),
+        )
+        archivo_id = _extract_inserted_id(cursor)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return archivo_id
+
+
+def get_archivo_blob(archivo_id):
+    conn = get_connection()
+    try:
+        row = conn.execute('SELECT * FROM archivos WHERE id=? LIMIT 1', (archivo_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    data = dict(row)
+    if isinstance(data.get('content'), memoryview):
+        data['content'] = data['content'].tobytes()
+    return data
+
+
+@serialized_write
+def delete_archivo_blob(archivo_id):
+    conn = get_connection()
+    try:
+        conn.execute('DELETE FROM archivos WHERE id=?', (archivo_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 # ─── Proveedores ────────────────────────────────────────────────────────────
 
 def get_proveedores(search=''):
@@ -744,8 +810,8 @@ def save_proveedor(data, prov_id=None):
         audit_action = 'UPDATE'
     else:
         placeholders = ', '.join('?' for _ in fields)
-        conn.execute(f'INSERT INTO proveedores ({", ".join(fields)}) VALUES ({placeholders})', values)
-        entity_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        cursor = conn.execute(f'INSERT INTO proveedores ({", ".join(fields)}) VALUES ({placeholders})', values)
+        entity_id = _extract_inserted_id(cursor)
         audit_action = 'CREATE'
     conn.commit()
     conn.close()
@@ -825,7 +891,7 @@ def save_egreso(data, egreso_id=None):
 
     fields = ('fecha', 'no_documento', 'consecutivo', 'proveedor_id',
               'razon_social', 'nit', 'valor', 'tipo_gasto', 'canal_pago', 'factura_electronica',
-              'observaciones', 'soporte_path', 'soporte_name', 'source_module', 'source_ref', 'source_period')
+              'observaciones', 'soporte_path', 'soporte_name', 'support_file_id', 'source_module', 'source_ref', 'source_period')
     values = (
         fecha,
         _clean_text(data.get('no_documento')),
@@ -840,6 +906,7 @@ def save_egreso(data, egreso_id=None):
         _clean_text(data.get('observaciones')),
         _clean_text(data.get('soporte_path')),
         _clean_text(data.get('soporte_name')),
+        data.get('support_file_id') or None,
         _clean_text(data.get('source_module')),
         _clean_text(data.get('source_ref')),
         _clean_text(data.get('source_period')),
@@ -853,8 +920,8 @@ def save_egreso(data, egreso_id=None):
             entity_id = egreso_id
         else:
             placeholders = ', '.join('?' for _ in fields)
-            conn.execute(f'INSERT INTO egresos ({", ".join(fields)}) VALUES ({placeholders})', values)
-            entity_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            cursor = conn.execute(f'INSERT INTO egresos ({", ".join(fields)}) VALUES ({placeholders})', values)
+            entity_id = _extract_inserted_id(cursor)
             audit_action = 'CREATE'
         conn.commit()
     except Exception:
@@ -881,6 +948,11 @@ def delete_egreso(egreso_id):
     conn.execute('DELETE FROM egresos WHERE id=?', (egreso_id,))
     conn.commit()
     conn.close()
+    if row and 'support_file_id' in row and row['support_file_id']:
+        try:
+            delete_archivo_blob(row['support_file_id'])
+        except Exception:
+            pass
     if row:
         log_auditoria('egreso', 'DELETE', egreso_id, period_from_month_year(mes, ano), row['razon_social'], dict(row))
 
@@ -938,11 +1010,11 @@ def save_ingreso(data, ingreso_id=None):
             entity_id = ingreso_id
             audit_action = 'UPDATE'
         else:
-            conn.execute(
+            cursor = conn.execute(
                 'INSERT INTO ingresos (fecha, caja, bancos, tarjeta_cr) VALUES (?,?,?,?)',
                 (fecha, caja, bancos, tarjeta_cr)
             )
-            entity_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            entity_id = _extract_inserted_id(cursor)
             audit_action = 'CREATE'
         conn.commit()
     except Exception:
@@ -1208,11 +1280,11 @@ def save_nomina_asistencia(data, asistencia_id=None, conn=None, log_audit=True):
                 audit_action = 'UPDATE'
             else:
                 placeholders = ', '.join('?' for _ in fields)
-                conn.execute(
+                cursor = conn.execute(
                     f'INSERT INTO nomina_asistencia ({", ".join(fields)}) VALUES ({placeholders})',
                     values,
                 )
-                entity_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+                entity_id = _extract_inserted_id(cursor)
                 audit_action = 'CREATE'
         if owns_conn:
             conn.commit()
@@ -1359,11 +1431,11 @@ def save_nomina_novedad(data, novedad_id=None):
             audit_action = 'UPDATE'
         else:
             placeholders = ', '.join('?' for _ in fields)
-            conn.execute(
+            cursor = conn.execute(
                 f'INSERT INTO nomina_novedades ({", ".join(fields)}) VALUES ({placeholders})',
                 values,
             )
-            entity_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            entity_id = _extract_inserted_id(cursor)
             audit_action = 'CREATE'
         conn.commit()
     except Exception:
@@ -1617,11 +1689,11 @@ def set_cierre_mensual(mes, ano, cerrado=True, observacion=''):
         )
         cierre_id = existing[0]
     else:
-        conn.execute(
+        cursor = conn.execute(
             'INSERT INTO cierres_mensuales (periodo, cerrado, cerrado_at, observacion, mes, ano) VALUES (?,?,?,?,?,?)',
             payload,
         )
-        cierre_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        cierre_id = _extract_inserted_id(cursor)
     conn.commit()
     conn.close()
     log_auditoria('cierre_mensual', 'CERRAR' if cerrado else 'REABRIR', cierre_id, periodo, observacion, {
@@ -2123,14 +2195,14 @@ def save_cuadre_caja(data, cuadre_id=None):
             entity_id = cuadre_id
             action = 'UPDATE'
         else:
-            conn.execute(
+            cursor = conn.execute(
                 '''INSERT INTO cuadre_caja (fecha, saldo_inicial, ingresos_caja, egresos_caja,
                    saldo_esperado, saldo_real, diferencia, observaciones, cerrado, created_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?)''',
                 (fecha, saldo_inicial, ingresos_caja, egresos_caja, saldo_esperado,
                  saldo_real, diferencia, observaciones, cerrado, now)
             )
-            entity_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            entity_id = _extract_inserted_id(cursor)
             action = 'CREATE'
         conn.commit()
     finally:
@@ -2170,14 +2242,14 @@ def create_caja_ajuste(data):
     now = datetime.now().isoformat(timespec='seconds')
     conn = get_connection()
     try:
-        conn.execute(
+        cursor = conn.execute(
             '''
             INSERT INTO caja_ajustes (fecha, tipo, valor, motivo, observaciones, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ''',
             (fecha, tipo, valor, motivo, observaciones, now),
         )
-        ajuste_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        ajuste_id = _extract_inserted_id(cursor)
         conn.commit()
     except Exception:
         conn.rollback()

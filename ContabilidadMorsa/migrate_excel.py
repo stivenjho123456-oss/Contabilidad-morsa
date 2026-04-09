@@ -1,5 +1,5 @@
 """
-Ejecutar UNA SOLA VEZ para importar el Excel a la base de datos SQLite.
+Ejecutar una sola vez para importar el Excel base a la base de datos activa.
 Uso: python migrate_excel.py
 """
 import os
@@ -10,12 +10,9 @@ from datetime import datetime
 # Agregar la carpeta raiz al path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app_paths import default_writable_excel_path
-from backup_manager import create_backup_if_due
 from database import init_db, write_transaction
 
-EXCEL_FILENAME = 'MARZO 2025.xlsx'
-EXCEL_PATH = str(default_writable_excel_path(EXCEL_FILENAME))
+EXCEL_PATH = ''
 
 
 def clean(val):
@@ -32,15 +29,15 @@ def clean_tipo(val):
     return t if t else 'GASTO'
 
 
-def migrate():
-    if not os.path.exists(EXCEL_PATH):
-        print(f'ERROR: No se encontro el archivo:\n  {EXCEL_PATH}')
+def migrate(path: str | None = None):
+    source_path = (path or EXCEL_PATH or '').strip()
+    if not source_path or not os.path.exists(source_path):
+        print(f'ERROR: No se encontro el archivo:\n  {source_path or "(sin ruta)"}')
         sys.exit(1)
 
     init_db()
-    create_backup_if_due('pre_excel_import', max_age_minutes=15)
 
-    wb = openpyxl.load_workbook(EXCEL_PATH, data_only=True)
+    wb = openpyxl.load_workbook(source_path, data_only=True)
     with write_transaction(checkpoint=True, checkpoint_mode='TRUNCATE') as conn:
         print('Limpiando datos anteriores...')
         conn.execute('DELETE FROM ingresos')
@@ -124,4 +121,4 @@ def migrate():
 
 
 if __name__ == '__main__':
-    migrate()
+    migrate(sys.argv[1] if len(sys.argv) > 1 else None)

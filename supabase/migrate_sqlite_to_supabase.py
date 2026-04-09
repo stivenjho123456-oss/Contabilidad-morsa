@@ -10,7 +10,7 @@ Uso:
 Variables de entorno requeridas:
     DATABASE_URL  — Connection string de Supabase (Transaction Pooler)
                    Ej: postgresql://postgres.[ref]:[pass]@aws-0-us-east-1.pooler.supabase.com:6543/postgres
-    SQLITE_PATH   — Ruta al archivo .db (por defecto: Library/Application Support/Contabilidad Morsa/contabilidad.db)
+    SQLITE_PATH   — Ruta al archivo .db a migrar (por defecto: ./contabilidad.db si existe)
 """
 import os
 import sys
@@ -36,7 +36,12 @@ if not DATABASE_URL and not USE_PARAMS:
     print("ERROR: Define DATABASE_URL o las variables PG_HOST + PG_PASSWORD.")
     sys.exit(1)
 
-_default_sqlite = Path.home() / "Library" / "Application Support" / "Contabilidad Morsa" / "contabilidad.db"
+ROOT = Path(__file__).resolve().parents[1]
+_default_candidates = [
+    ROOT / "contabilidad.db",
+    Path.home() / "Library" / "Application Support" / "Contabilidad Morsa" / "contabilidad.db",
+]
+_default_sqlite = next((path for path in _default_candidates if path.exists()), _default_candidates[0])
 SQLITE_PATH = Path(os.getenv("SQLITE_PATH", str(_default_sqlite)))
 if not SQLITE_PATH.exists():
     print(f"ERROR: No se encontró el archivo SQLite en: {SQLITE_PATH}")
@@ -46,6 +51,7 @@ if not SQLITE_PATH.exists():
 
 TABLES = [
     "proveedores",
+    "archivos",
     "egresos",
     "ingresos",
     "nomina_resumen",
@@ -68,6 +74,8 @@ def sqlite_to_pg_value(v):
     """Convierte valores SQLite a tipos compatibles con PostgreSQL."""
     if isinstance(v, (int, float, str, type(None))):
         return v
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return psycopg2.Binary(bytes(v))
     return str(v)
 
 

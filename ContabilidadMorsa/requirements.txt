@@ -1,3 +1,0 @@
-customtkinter>=5.2.0
-openpyxl>=3.1.0
-tkcalendar>=1.6.1

@@ -1,18 +1,14 @@
 """
-db_adapter.py — Capa de compatibilidad SQLite ↔ PostgreSQL
+db_adapter.py — Capa de acceso a base de datos para despliegue cloud-first.
 
-Si la variable de entorno DATABASE_URL está definida, usa PostgreSQL (Supabase).
-Si no, usa SQLite local (desarrollo / desktop).
-
-Exporta get_connection() con la misma interfaz que usa database.py.
+El producto soportado es PostgreSQL (Supabase / Render). SQLite queda permitido
+solo como respaldo explícito para pruebas automatizadas cuando MORSA_ALLOW_SQLITE=1.
 """
 from __future__ import annotations
 
 import os
 import re
 import sqlite3
-from pathlib import Path
-from typing import Any
 
 _DATABASE_URL: str | None = os.getenv("DATABASE_URL")
 # Soporte alternativo con variables individuales (evita problemas con contraseñas con caracteres especiales)
@@ -22,8 +18,130 @@ _PG_PASSWORD = os.getenv("PG_PASSWORD", "").strip()
 _PG_DBNAME   = os.getenv("PG_DBNAME", "postgres").strip()
 _PG_PORT     = int(os.getenv("PG_PORT", "5432"))
 _USE_PG_PARAMS = bool(_PG_HOST and _PG_PASSWORD)
+ALLOW_SQLITE_FALLBACK = os.getenv("MORSA_ALLOW_SQLITE", "0").strip() == "1"
 
 USE_POSTGRES: bool = _USE_PG_PARAMS or bool(_DATABASE_URL)
+
+
+class DatabaseSchemaError(RuntimeError):
+    """Señala que el esquema PostgreSQL no cumple el contrato esperado por la app."""
+
+
+REQUIRED_PG_SCHEMA: dict[str, tuple[str, ...]] = {
+    "proveedores": (
+        "id", "razon_social", "nit", "primer_nombre", "segundo_nombre",
+        "primer_apellido", "segundo_apellido", "direccion", "telefono", "correo", "tipo",
+    ),
+    "archivos": (
+        "id", "scope", "file_name", "content_type", "size_bytes", "content", "created_at",
+    ),
+    "egresos": (
+        "id", "fecha", "no_documento", "consecutivo", "proveedor_id", "razon_social", "nit",
+        "valor", "tipo_gasto", "canal_pago", "factura_electronica", "observaciones",
+        "soporte_path", "soporte_name", "support_file_id", "source_module", "source_ref", "source_period",
+    ),
+    "ingresos": ("id", "fecha", "caja", "bancos", "tarjeta_cr"),
+    "nomina_resumen": (
+        "id", "periodo", "empleado", "cedula", "valor_dia", "q1_dias", "q1_devengado",
+        "q1_aux_transporte", "q1_salud", "q1_pension", "q1_neto", "q2_dias", "q2_devengado",
+        "q2_aux_transporte", "q2_salud", "q2_pension", "q2_neto", "total_deduccion",
+        "total_incapacidad", "total_descuento", "total_mes", "origen_archivo",
+    ),
+    "nomina_seg_social": (
+        "id", "periodo", "grupo", "concepto", "valor", "observaciones", "origen_archivo",
+    ),
+    "nomina_novedades": (
+        "id", "periodo", "fecha", "empleado", "cedula", "quincena", "naturaleza",
+        "tipo_novedad", "valor", "observaciones", "origen_archivo",
+    ),
+    "nomina_asistencia": (
+        "id", "periodo", "empleado", "cedula", "dia", "quincena", "estado", "origen_archivo",
+    ),
+    "cierres_mensuales": ("id", "mes", "ano", "periodo", "cerrado", "cerrado_at", "observacion"),
+    "auditoria": ("id", "created_at", "entidad", "entidad_id", "accion", "periodo", "detalle", "snapshot"),
+    "cuadre_caja": (
+        "id", "fecha", "saldo_inicial", "ingresos_caja", "egresos_caja",
+        "saldo_esperado", "saldo_real", "diferencia", "observaciones", "cerrado", "created_at",
+    ),
+    "caja_ajustes": ("id", "fecha", "tipo", "valor", "motivo", "observaciones", "created_at"),
+    "usuarios": (
+        "id", "username", "full_name", "password_hash", "role", "active",
+        "created_at", "updated_at", "last_login_at",
+    ),
+    "auth_sessions": (
+        "id", "user_id", "token_hash", "created_at", "expires_at", "last_seen_at",
+        "revoked_at", "user_agent", "ip_address",
+    ),
+}
+
+
+def get_pg_schema_report():
+    report = {
+        "backend": "postgresql",
+        "ok": True,
+        "tables_checked": len(REQUIRED_PG_SCHEMA),
+        "missing_tables": [],
+        "missing_columns": {},
+        "error": None,
+    }
+    conn = None
+    try:
+        conn = get_pg_connection()
+        rows = conn.execute("""
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+        """).fetchall()
+    except Exception as exc:
+        report["ok"] = False
+        report["error"] = str(exc)
+        return report
+    finally:
+        if conn is not None:
+            conn.close()
+
+    existing: dict[str, set[str]] = {}
+    for row in rows:
+        table_name = row[0]
+        column_name = row[1]
+        existing.setdefault(table_name, set()).add(column_name)
+
+    for table_name, required_columns in REQUIRED_PG_SCHEMA.items():
+        present_columns = existing.get(table_name)
+        if not present_columns:
+            report["missing_tables"].append(table_name)
+            continue
+        missing_columns = [column for column in required_columns if column not in present_columns]
+        if missing_columns:
+            report["missing_columns"][table_name] = missing_columns
+
+    report["ok"] = not report["missing_tables"] and not report["missing_columns"] and not report["error"]
+    return report
+
+
+def require_pg_schema():
+    report = get_pg_schema_report()
+    if report["ok"]:
+        return report
+
+    details: list[str] = []
+    if report["error"]:
+        details.append(f"no fue posible inspeccionar el esquema: {report['error']}")
+    if report["missing_tables"]:
+        details.append(f"tablas faltantes: {', '.join(report['missing_tables'])}")
+    if report["missing_columns"]:
+        missing_parts = [
+            f"{table}({', '.join(columns)})"
+            for table, columns in sorted(report["missing_columns"].items())
+        ]
+        details.append(f"columnas faltantes: {'; '.join(missing_parts)}")
+
+    detail_text = ". ".join(details) if details else "desfase de esquema no especificado"
+    raise DatabaseSchemaError(
+        "El esquema PostgreSQL no coincide con la versión de la aplicación. "
+        "Ejecuta supabase/schema.sql o la migración correspondiente. "
+        f"Detalle: {detail_text}."
+    )
 
 
 # ── Adaptación de SQL ─────────────────────────────────────────────────────────
@@ -187,13 +305,9 @@ class _PgConnectionWrapper:
         return self._exec_single(stripped, params)
 
     def _exec_single(self, sql: str, params):
-        import psycopg2.errors as pg_errors  # importación diferida
-
         # Detectar INSERT para agregar RETURNING id automáticamente
         sql_upper = sql.strip().upper()
         is_insert = sql_upper.startswith("INSERT")
-        # Solo silenciar errores de esquema para DDL (CREATE/ALTER/DROP) — nunca para DML
-        is_ddl = bool(re.match(r"(CREATE|ALTER|DROP|TRUNCATE)\b", sql_upper))
         adapted = _adapt_sql(sql)
 
         if is_insert and "RETURNING" not in adapted.upper():
@@ -201,16 +315,6 @@ class _PgConnectionWrapper:
 
         try:
             self._cur.execute(adapted, params or ())
-        except pg_errors.DuplicateColumn:
-            # ALTER TABLE ADD COLUMN sobre una columna que ya existe — ignorar solo en DDL
-            if not is_ddl:
-                raise
-            return _EmptyCursor()
-        except pg_errors.UndefinedTable:
-            # Tabla inexistente — ignorar solo en DDL (init_db usa IF NOT EXISTS)
-            if not is_ddl:
-                raise
-            return _EmptyCursor()
         except Exception as exc:
             import psycopg2
             if isinstance(exc, psycopg2.OperationalError):
@@ -229,19 +333,10 @@ class _PgConnectionWrapper:
         return _PgCursorWrapper(self._cur)
 
     def executescript(self, script: str):
-        """Ejecuta múltiples sentencias DDL (para init_db)."""
-        # Adaptar tipos SQLite → PostgreSQL en DDL
-        script = script.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-        script = script.replace("REAL ", "DOUBLE PRECISION ")
-
-        for stmt in script.split(";"):
-            stmt = stmt.strip()
-            if stmt and not stmt.upper().startswith("--"):
-                try:
-                    self._cur.execute(stmt)
-                except Exception:
-                    pass  # IF NOT EXISTS protege contra re-ejecución
-        self._conn.commit()
+        raise DatabaseSchemaError(
+            "El runtime PostgreSQL no permite ejecutar DDL dinámico. "
+            "Aplica supabase/schema.sql o migraciones formales antes de iniciar la API."
+        )
 
     def commit(self):
         try:
@@ -336,6 +431,33 @@ def _get_pool():
 
     _pool = psycopg2.pool.ThreadedConnectionPool(1, 8, **kwargs)
     return _pool
+
+
+def get_pg_database_health():
+    status = {
+        "backend": "postgresql",
+        "exists": True,
+        "ok": True,
+        "connected": False,
+        "database": None,
+        "server_version": None,
+        "error": None,
+    }
+    conn = None
+    try:
+        conn = get_pg_connection()
+        row = conn.execute("SELECT current_database(), version()").fetchone()
+        status["connected"] = True
+        if row is not None:
+            status["database"] = row[0]
+            status["server_version"] = row[1]
+    except Exception as exc:
+        status["ok"] = False
+        status["error"] = str(exc)
+    finally:
+        if conn is not None:
+            conn.close()
+    return status
 
 
 # ── Fábrica de conexión pública ───────────────────────────────────────────────
