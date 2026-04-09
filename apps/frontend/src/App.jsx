@@ -45,6 +45,7 @@ const EMPTY_NOMINA = {
   seg_social: [],
   novedades: [],
 };
+const DEFAULT_API_TIMEOUT_MS = 30000;
 const AUTH_STORAGE_KEY = "morsa_auth_session";
 const AUTH_INVALID_EVENT = "morsa-auth-invalid";
 const PUBLIC_API_PATHS = new Set([
@@ -67,7 +68,7 @@ function applyLoadTask(task, result, failures) {
   failures.push(`${task.label}: ${result.reason?.message || "error"}`);
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_API_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -159,7 +160,7 @@ async function ensureApiSession() {
   throw new Error("Debes iniciar sesión para continuar.");
 }
 
-async function fetchApi(path, options = {}, timeoutMs = 15000) {
+async function fetchApi(path, options = {}, timeoutMs = DEFAULT_API_TIMEOUT_MS) {
   const headers = buildApiHeaders(options.headers, options.body);
   if (!isPublicApiPath(path)) {
     const session = await ensureApiSession();

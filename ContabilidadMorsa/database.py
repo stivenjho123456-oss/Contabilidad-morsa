@@ -1320,47 +1320,35 @@ def delete_nomina_asistencia(asistencia_id):
 
 
 def get_nomina_asistencia_resumen(periodo=None):
-    rows = get_nomina_asistencia(periodo=periodo)
-    resumen = {}
-    for row in rows:
-        key = (row.get('periodo'), row.get('empleado'), row.get('cedula'))
-        if key not in resumen:
-            resumen[key] = {
-                'periodo': row.get('periodo'),
-                'empleado': row.get('empleado'),
-                'cedula': row.get('cedula'),
-                'q1_laborados': 0,
-                'q2_laborados': 0,
-                'dias_laborados': 0,
-                'dias_incapacidad': 0,
-                'dias_vacaciones': 0,
-                'dias_no_fue': 0,
-                'dias_permiso_no_remunerado': 0,
-                'dias_cita_medica': 0,
-                'dias_domingo_festivo': 0,
-            }
-        item = resumen[key]
-        estado = (row.get('estado') or '').upper()
-        dia = int(row.get('dia') or 0)
-        if estado == 'LABORADO':
-            item['dias_laborados'] += 1
-            if dia <= 15:
-                item['q1_laborados'] += 1
-            else:
-                item['q2_laborados'] += 1
-        elif estado == 'INCAPACIDAD':
-            item['dias_incapacidad'] += 1
-        elif estado == 'VACACIONES':
-            item['dias_vacaciones'] += 1
-        elif estado == 'NO_FUE':
-            item['dias_no_fue'] += 1
-        elif estado == 'PERMISO_NO_REMUNERADO':
-            item['dias_permiso_no_remunerado'] += 1
-        elif estado == 'CITA_MEDICA':
-            item['dias_cita_medica'] += 1
-        elif estado == 'DOMINGO_FESTIVO':
-            item['dias_domingo_festivo'] += 1
-    return sorted(resumen.values(), key=lambda item: (item['empleado'] or '').upper())
+    conn = get_connection()
+    query = '''
+        SELECT
+            periodo,
+            empleado,
+            cedula,
+            SUM(CASE WHEN estado = 'LABORADO' AND dia <= 15 THEN 1 ELSE 0 END) AS q1_laborados,
+            SUM(CASE WHEN estado = 'LABORADO' AND dia > 15 THEN 1 ELSE 0 END) AS q2_laborados,
+            SUM(CASE WHEN estado = 'LABORADO' THEN 1 ELSE 0 END) AS dias_laborados,
+            SUM(CASE WHEN estado = 'INCAPACIDAD' THEN 1 ELSE 0 END) AS dias_incapacidad,
+            SUM(CASE WHEN estado = 'VACACIONES' THEN 1 ELSE 0 END) AS dias_vacaciones,
+            SUM(CASE WHEN estado = 'NO_FUE' THEN 1 ELSE 0 END) AS dias_no_fue,
+            SUM(CASE WHEN estado = 'PERMISO_NO_REMUNERADO' THEN 1 ELSE 0 END) AS dias_permiso_no_remunerado,
+            SUM(CASE WHEN estado = 'CITA_MEDICA' THEN 1 ELSE 0 END) AS dias_cita_medica,
+            SUM(CASE WHEN estado = 'DOMINGO_FESTIVO' THEN 1 ELSE 0 END) AS dias_domingo_festivo
+        FROM nomina_asistencia
+        WHERE 1=1
+    '''
+    params = []
+    if periodo and periodo != 'Todos':
+        query += ' AND periodo=?'
+        params.append(periodo)
+    query += '''
+        GROUP BY periodo, empleado, cedula
+        ORDER BY UPPER(COALESCE(empleado, '')), empleado
+    '''
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_nomina_novedades(periodo=None, search=''):
@@ -1517,7 +1505,20 @@ def get_nomina_stats(periodo=None):
     seg = get_nomina_seg_social(periodo=periodo)
     novedades = get_nomina_novedades(periodo=periodo)
     asistencia = get_nomina_asistencia_resumen(periodo=periodo)
+    return _build_nomina_stats_payload(resumen, seg, novedades, asistencia)
 
+
+def get_nomina_workflow(periodo=None):
+    periodo = periodo or 'Todos'
+    asistencia = get_nomina_asistencia_resumen(periodo=periodo)
+    resumen = get_nomina_resumen(periodo=periodo)
+    seg = get_nomina_seg_social(periodo=periodo)
+    novedades = get_nomina_novedades(periodo=periodo)
+    synced = _count_nomina_sync_rows(periodo=periodo)
+    return _build_nomina_workflow_payload(periodo, resumen, seg, novedades, asistencia, synced)
+
+
+def _build_nomina_stats_payload(resumen, seg, novedades, asistencia):
     total_nomina = sum(r.get('total_mes') or 0 for r in resumen)
     total_q1 = sum(r.get('q1_neto') or 0 for r in resumen)
     total_q2 = sum(r.get('q2_neto') or 0 for r in resumen)
@@ -1529,7 +1530,6 @@ def get_nomina_stats(periodo=None):
     total_novedades_ded = sum(
         r.get('valor') or 0 for r in novedades if (r.get('naturaleza') or '').upper() == 'DEDUCCION'
     )
-
     return {
         'empleados': len(resumen),
         'total_nomina': total_nomina,
@@ -1545,21 +1545,20 @@ def get_nomina_stats(periodo=None):
     }
 
 
-def get_nomina_workflow(periodo=None):
-    periodo = periodo or 'Todos'
-    asistencia = get_nomina_asistencia_resumen(periodo=periodo)
-    resumen = get_nomina_resumen(periodo=periodo)
-    seg = get_nomina_seg_social(periodo=periodo)
-    novedades = get_nomina_novedades(periodo=periodo)
+def _count_nomina_sync_rows(periodo=None):
     conn = get_connection()
     try:
-        synced = conn.execute(
-            'SELECT COUNT(*) FROM egresos WHERE source_module=? AND (? = "Todos" OR source_period=?)',
-            ('NOMINA', periodo, periodo),
-        ).fetchone()[0]
+        query = 'SELECT COUNT(*) FROM egresos WHERE source_module=?'
+        params = ['NOMINA']
+        if periodo and periodo != 'Todos':
+            query += ' AND source_period=?'
+            params.append(periodo)
+        return conn.execute(query, params).fetchone()[0]
     finally:
         conn.close()
 
+
+def _build_nomina_workflow_payload(periodo, resumen, seg, novedades, asistencia, synced):
     estados = [
         {
             'step': 'asistencia',
@@ -1603,6 +1602,53 @@ def get_nomina_workflow(periodo=None):
         'total_steps': len(estados),
         'ready_to_close': all(item['completed'] for item in estados[:3]),
         'steps': estados,
+    }
+
+
+def get_nomina_bundle(periodo=None, search=''):
+    periodos = get_nomina_periodos()
+    resumen_all = get_nomina_resumen(periodo=periodo)
+    seg_social = get_nomina_seg_social(periodo=periodo)
+    novedades_all = get_nomina_novedades(periodo=periodo)
+    asistencia_resumen = get_nomina_asistencia_resumen(periodo=periodo)
+    stats = _build_nomina_stats_payload(resumen_all, seg_social, novedades_all, asistencia_resumen)
+    workflow = _build_nomina_workflow_payload(
+        periodo or 'Todos',
+        resumen_all,
+        seg_social,
+        novedades_all,
+        asistencia_resumen,
+        _count_nomina_sync_rows(periodo=periodo),
+    )
+
+    if search:
+        query = str(search).strip().lower()
+        resumen = [
+            row for row in resumen_all
+            if query in f"{row.get('empleado') or ''} {row.get('cedula') or ''}".lower()
+        ]
+        novedades = [
+            row for row in novedades_all
+            if query in " ".join(
+                str(row.get(field) or '').lower()
+                for field in ('empleado', 'cedula', 'tipo_novedad', 'observaciones')
+            )
+        ]
+        asistencia = get_nomina_asistencia(periodo=periodo, empleado=search)
+    else:
+        resumen = resumen_all
+        novedades = novedades_all
+        asistencia = get_nomina_asistencia(periodo=periodo)
+
+    return {
+        'periodos': periodos,
+        'stats': stats,
+        'workflow': workflow,
+        'resumen': resumen,
+        'asistencia': asistencia,
+        'asistencia_resumen': asistencia_resumen,
+        'seg_social': seg_social,
+        'novedades': novedades,
     }
 
 

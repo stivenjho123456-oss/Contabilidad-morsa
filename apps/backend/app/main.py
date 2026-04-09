@@ -5,6 +5,7 @@ import secrets
 import sys
 import sqlite3
 import tempfile
+import time
 from datetime import datetime
 from io import BytesIO
 from typing import Any
@@ -74,14 +75,10 @@ from database import (  # noqa: E402
     get_dashboard_stats,
     get_egresos,
     get_ingresos,
-    get_nomina_asistencia,
-    get_nomina_asistencia_resumen,
+    get_nomina_bundle,
     get_nomina_novedades,
-    get_nomina_periodos,
     get_nomina_resumen,
     get_nomina_seg_social,
-    get_nomina_stats,
-    get_nomina_workflow,
     get_proveedores,
     get_saldo_inicial_sugerido,
     get_tipos_gasto_distintos,
@@ -131,6 +128,8 @@ ALLOWED_IMPORT_EXTENSIONS = {".xlsx", ".xlsm"}
 MAX_SUPPORT_SIZE_BYTES = 10 * 1024 * 1024
 MAX_IMPORT_SIZE_BYTES = 25 * 1024 * 1024
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+SYSTEM_SUMMARY_CACHE_SECONDS = 20
+RUNTIME_STATUS_CACHE_SECONDS = 30
 LOG_HANDLERS = [logging.StreamHandler()]
 try:
     LOG_HANDLERS.insert(0, logging.FileHandler(LOG_FILE, encoding="utf-8"))
@@ -274,7 +273,11 @@ def _sanitize_filename(value: str) -> str:
 def _startup_state():
     return {
         "db_health": None,
+        "db_health_checked_at": 0.0,
         "schema_status": None,
+        "schema_status_checked_at": 0.0,
+        "system_summary_cache": None,
+        "system_summary_cache_at": 0.0,
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "log_file": str(LOG_FILE),
         "deployment_mode": "cloud",
@@ -291,6 +294,17 @@ def _current_schema_status():
     if USE_POSTGRES:
         return get_pg_schema_report()
     return None
+
+
+def _refresh_runtime_status(runtime: dict[str, Any], *, force: bool = False):
+    now = time.monotonic()
+    if force or runtime.get("db_health") is None or (now - runtime.get("db_health_checked_at", 0.0)) >= RUNTIME_STATUS_CACHE_SECONDS:
+        runtime["db_health"] = _current_db_health()
+        runtime["db_health_checked_at"] = now
+    if force or runtime.get("schema_status") is None or (now - runtime.get("schema_status_checked_at", 0.0)) >= RUNTIME_STATUS_CACHE_SECONDS:
+        runtime["schema_status"] = _current_schema_status()
+        runtime["schema_status_checked_at"] = now
+    return runtime["db_health"], runtime["schema_status"]
 
 
 def _apply_security_headers(response, *, is_api: bool):
@@ -520,14 +534,26 @@ def _safe_local_path(value: str | None, fallback: str) -> Path:
 def _system_counts():
     conn = get_connection()
     try:
+        row = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM proveedores) AS proveedores,
+                (SELECT COUNT(*) FROM egresos) AS egresos,
+                (SELECT COUNT(*) FROM ingresos) AS ingresos,
+                (SELECT COUNT(*) FROM nomina_resumen) AS nomina_resumen,
+                (SELECT COUNT(*) FROM nomina_seg_social) AS nomina_seg_social,
+                (SELECT COUNT(*) FROM nomina_novedades) AS nomina_novedades,
+                (SELECT COUNT(*) FROM nomina_asistencia) AS nomina_asistencia
+            """
+        ).fetchone()
         return {
-            "proveedores": conn.execute("SELECT COUNT(*) FROM proveedores").fetchone()[0],
-            "egresos": conn.execute("SELECT COUNT(*) FROM egresos").fetchone()[0],
-            "ingresos": conn.execute("SELECT COUNT(*) FROM ingresos").fetchone()[0],
-            "nomina_resumen": conn.execute("SELECT COUNT(*) FROM nomina_resumen").fetchone()[0],
-            "nomina_seg_social": conn.execute("SELECT COUNT(*) FROM nomina_seg_social").fetchone()[0],
-            "nomina_novedades": conn.execute("SELECT COUNT(*) FROM nomina_novedades").fetchone()[0],
-            "nomina_asistencia": conn.execute("SELECT COUNT(*) FROM nomina_asistencia").fetchone()[0],
+            "proveedores": row["proveedores"],
+            "egresos": row["egresos"],
+            "ingresos": row["ingresos"],
+            "nomina_resumen": row["nomina_resumen"],
+            "nomina_seg_social": row["nomina_seg_social"],
+            "nomina_novedades": row["nomina_novedades"],
+            "nomina_asistencia": row["nomina_asistencia"],
         }
     finally:
         conn.close()
@@ -568,7 +594,7 @@ def on_startup():
         else:
             init_db()
         ensure_bootstrap_admin_from_env()
-        app.state.runtime["db_health"] = _current_db_health()
+        _refresh_runtime_status(app.state.runtime, force=True)
     except DatabaseSchemaError as exc:
         logger.error("Esquema PostgreSQL inválido en startup: %s", exc)
         raise RuntimeError(str(exc)) from exc
@@ -692,18 +718,23 @@ def health():
 @app.get("/api/system/summary")
 def system_summary():
     runtime = getattr(app.state, "runtime", _startup_state())
-    db_health = _current_db_health()
-    schema_status = _current_schema_status()
-    runtime["db_health"] = db_health
-    runtime["schema_status"] = schema_status
-    return _api_ok(
-        {
-            "db_health": _serialize_db_health(db_health),
-            "schema_status": _serialize_schema_status(schema_status),
+    db_health, schema_status = _refresh_runtime_status(runtime)
+    now = time.monotonic()
+    cached = runtime.get("system_summary_cache")
+    if not cached or (now - runtime.get("system_summary_cache_at", 0.0)) >= SYSTEM_SUMMARY_CACHE_SECONDS:
+        cached = {
             "counts": _system_counts(),
             "cierres": list_cierres_mensuales()[:24],
             "deployment_mode": runtime.get("deployment_mode", "cloud"),
             "storage_mode": "database",
+        }
+        runtime["system_summary_cache"] = cached
+        runtime["system_summary_cache_at"] = now
+    return _api_ok(
+        {
+            "db_health": _serialize_db_health(db_health),
+            "schema_status": _serialize_schema_status(schema_status),
+            **cached,
         }
     )
 
@@ -727,11 +758,14 @@ def root(request: Request):
 def dashboard(
     mes: int | None = Query(default=None),
     ano: int | None = Query(default=None),
+    include_cierre: bool = Query(default=False),
 ):
     _validate_period(mes, ano)
     stats = get_dashboard_stats(mes=mes, ano=ano)
-    cierre = get_cierre_mensual(mes or 1, ano or 2026) if mes and ano else None
-    return _api_ok({"stats": stats, "cierre": cierre})
+    payload = {"stats": stats}
+    if include_cierre and mes and ano:
+        payload["cierre"] = get_cierre_mensual(mes, ano)
+    return _api_ok(payload)
 
 
 @app.get("/api/proveedores")
@@ -1065,16 +1099,7 @@ def get_egreso_soporte(egreso_id: int):
 
 @app.get("/api/nomina")
 def nomina(periodo: str | None = Query(default=None), search: str = ""):
-    return _api_ok({
-        "periodos": get_nomina_periodos(),
-        "stats": get_nomina_stats(periodo=periodo),
-        "workflow": get_nomina_workflow(periodo=periodo),
-        "resumen": get_nomina_resumen(periodo=periodo, search=search),
-        "asistencia": get_nomina_asistencia(periodo=periodo, empleado=search or None),
-        "asistencia_resumen": get_nomina_asistencia_resumen(periodo=periodo),
-        "seg_social": get_nomina_seg_social(periodo=periodo),
-        "novedades": get_nomina_novedades(periodo=periodo, search=search),
-    })
+    return _api_ok(get_nomina_bundle(periodo=periodo, search=search))
 
 
 @app.post("/api/nomina/asistencia")
