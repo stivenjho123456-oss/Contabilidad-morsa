@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
 const ENV_API_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
@@ -59,12 +59,14 @@ function money(value) {
   return `$ ${Number(value || 0).toLocaleString("es-CO", { maximumFractionDigits: 0 })}`;
 }
 
-function applyLoadTask(task, result, failures) {
+function applyLoadTask(task, result, failures, { preserveOnError = false } = {}) {
   if (result.status === "fulfilled") {
     task.apply(result.value);
     return;
   }
-  task.apply(task.fallback);
+  if (!preserveOnError) {
+    task.apply(task.fallback);
+  }
   failures.push(`${task.label}: ${result.reason?.message || "error"}`);
 }
 
@@ -2697,6 +2699,7 @@ function App() {
   const [notice,  setNotice]  = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const loadedViewsRef = useRef({});
   const dbHealthKnown = typeof systemSummary?.db_health?.ok === "boolean";
   const dbHealthy = systemSummary?.db_health?.ok !== false;
 
@@ -2709,7 +2712,7 @@ function App() {
     setNotice({ message, tone });
   }
 
-  const loadData = useCallback(async (view = activeView, { silent = false } = {}) => {
+  const loadData = useCallback(async (view, { silent = false } = {}) => {
     if (!getStoredApiSession()?.token) {
       setLoading(false);
       setRefreshing(false);
@@ -2832,8 +2835,11 @@ function App() {
       const baseResults = await Promise.allSettled(loadTasks.map((task) => task.promise));
       const failures = [];
       baseResults.forEach((result, index) => {
-        applyLoadTask(loadTasks[index], result, failures);
+        applyLoadTask(loadTasks[index], result, failures, { preserveOnError: silent });
       });
+      if (baseResults.some((result) => result.status === "fulfilled")) {
+        loadedViewsRef.current[view] = true;
+      }
 
       if (failures.length) {
         setError(failures.join(" | "));
@@ -2844,7 +2850,7 @@ function App() {
       if (silent) setRefreshing(false);
       else setLoading(false);
     }
-  }, [activeView, month, year, periodoNomina]);
+  }, [month, year, periodoNomina]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2896,8 +2902,9 @@ function App() {
 
   useEffect(() => {
     if (!authSession?.token) return;
-    loadData();
-  }, [authSession?.token, loadData]);
+    const shouldRefresh = activeView === "caja" || !!loadedViewsRef.current[activeView];
+    loadData(activeView, { silent: shouldRefresh });
+  }, [authSession?.token, activeView, month, year, periodoNomina, loadData]);
 
   useEffect(() => {
     if (!notice) return;
@@ -2907,6 +2914,7 @@ function App() {
 
   useEffect(() => {
     const handleAuthInvalid = () => {
+      loadedViewsRef.current = {};
       setAuthSession(null);
       setActiveView("dashboard");
       setDashboard(null);
@@ -2931,6 +2939,7 @@ function App() {
     setAuthSubmitting(true);
     setError("");
     try {
+      loadedViewsRef.current = {};
       const session = await request("/api/auth/login", {
         method: "POST",
         body: JSON.stringify(credentials),
@@ -2954,6 +2963,7 @@ function App() {
     setAuthSubmitting(true);
     setError("");
     try {
+      loadedViewsRef.current = {};
       const session = await request("/api/auth/bootstrap", {
         method: "POST",
         body: JSON.stringify(payload),
@@ -2981,6 +2991,7 @@ function App() {
     } catch {
       // Si el token ya no es válido, igual cerramos sesión localmente.
     } finally {
+      loadedViewsRef.current = {};
       resetApiSession();
       setAuthSession(null);
       setActiveView("dashboard");
