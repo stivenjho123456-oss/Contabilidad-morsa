@@ -1137,12 +1137,15 @@ def sync_nomina(payload: SyncNominaPayload):
 
 
 @app.get("/api/reportes/cierre")
-def cierre(mes: int = Query(...), ano: int = Query(...)):
+def cierre(mes: int = Query(...), ano: int = Query(...), include_details: bool = Query(default=True)):
     _validate_period(mes, ano)
     periodo = period_from_month_year(mes, ano)
+    cierre_data = get_cierre_mensual(mes, ano)
+    if not include_details:
+        return _api_ok({"cierre": cierre_data})
     egresos_rows = get_egresos(mes=mes, ano=ano)
     return _api_ok({
-        "cierre": get_cierre_mensual(mes, ano),
+        "cierre": cierre_data,
         "ingresos": get_ingresos(mes=mes, ano=ano),
         "egresos": [_serialize_egreso(row) for row in egresos_rows],
         "nomina": get_nomina_resumen(periodo=periodo),

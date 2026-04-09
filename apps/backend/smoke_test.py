@@ -205,6 +205,8 @@ def run():
 
     cierre = assert_ok(api_get("/api/reportes/cierre?mes=3&ano=2026"))
     assert {"cierre", "ingresos", "egresos", "nomina", "novedades", "seg_social"} <= set(cierre.keys())
+    cierre_liviano = assert_ok(api_get("/api/reportes/cierre?mes=3&ano=2026&include_details=false"))
+    assert set(cierre_liviano.keys()) == {"cierre"}
 
     cierre_mes = api_post("/api/cierres/cerrar", json={"mes": 3, "ano": 2026, "observacion": "smoke"})
     assert cierre_mes.status_code == 200, cierre_mes.text

@@ -35,6 +35,16 @@ const EMPTY_SYSTEM_SUMMARY = {
   storage_mode: "database",
   log_file: "",
 };
+const EMPTY_NOMINA = {
+  periodos: [],
+  stats: {},
+  workflow: { steps: [] },
+  resumen: [],
+  asistencia: [],
+  asistencia_resumen: [],
+  seg_social: [],
+  novedades: [],
+};
 const AUTH_STORAGE_KEY = "morsa_auth_session";
 const AUTH_INVALID_EVENT = "morsa-auth-invalid";
 const PUBLIC_API_PATHS = new Set([
@@ -48,13 +58,13 @@ function money(value) {
   return `$ ${Number(value || 0).toLocaleString("es-CO", { maximumFractionDigits: 0 })}`;
 }
 
-function applySettledResult(result, setter, fallback, label, failures) {
+function applyLoadTask(task, result, failures) {
   if (result.status === "fulfilled") {
-    setter(result.value);
+    task.apply(result.value);
     return;
   }
-  setter(fallback);
-  failures.push(`${label}: ${result.reason?.message || "error"}`);
+  task.apply(task.fallback);
+  failures.push(`${task.label}: ${result.reason?.message || "error"}`);
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
@@ -2672,7 +2682,8 @@ function App() {
   const [proveedores,  setProveedores]  = useState([]);
   const [ingresos,     setIngresos]     = useState([]);
   const [egresos,      setEgresos]      = useState([]);
-  const [nomina,       setNomina]       = useState({ periodos: [], stats: {}, workflow: { steps: [] }, resumen: [], asistencia: [], asistencia_resumen: [], seg_social: [], novedades: [] });
+  const [nomina,       setNomina]       = useState(EMPTY_NOMINA);
+  const [cierreMensual, setCierreMensual] = useState(null);
   const [reporte,      setReporte]      = useState(null);
   const [auditoria,    setAuditoria]    = useState([]);
   const [analisisIngresos, setAnalisisIngresos] = useState(null);
@@ -2697,7 +2708,7 @@ function App() {
     setNotice({ message, tone });
   }
 
-  const loadData = useCallback(async ({ silent = false } = {}) => {
+  const loadData = useCallback(async (view = activeView, { silent = false } = {}) => {
     if (!getStoredApiSession()?.token) {
       setLoading(false);
       setRefreshing(false);
@@ -2707,42 +2718,121 @@ function App() {
     else setLoading(true);
     setError("");
     try {
-      const baseResults = await Promise.allSettled([
-        request("/api/system/summary"),
-        request(`/api/dashboard?mes=${month}&ano=${year}`),
-        request("/api/proveedores"),
-        request(`/api/ingresos?mes=${month}&ano=${year}`),
-        request(`/api/egresos?mes=${month}&ano=${year}`),
-        request(`/api/reportes/cierre?mes=${month}&ano=${year}`),
-        request("/api/auditoria?limit=80"),
-        request("/api/ingresos/analisis"),
-      ]);
-      const failures = [];
-      applySettledResult(baseResults[0], setSystemSummary, EMPTY_SYSTEM_SUMMARY, "Sistema", failures);
-      applySettledResult(baseResults[1], setDashboard, null, "Dashboard", failures);
-      applySettledResult(baseResults[2], setProveedores, [], "Proveedores", failures);
-      applySettledResult(baseResults[3], setIngresos, [], "Ingresos", failures);
-      applySettledResult(baseResults[4], setEgresos, [], "Egresos", failures);
-      applySettledResult(baseResults[5], setReporte, null, "Reportes", failures);
-      applySettledResult(baseResults[6], setAuditoria, [], "Auditoría", failures);
-      applySettledResult(baseResults[7], setAnalisisIngresos, null, "Análisis ingresos", failures);
+      const loadTasks = [
+        {
+          label: "Sistema",
+          promise: request("/api/system/summary"),
+          fallback: EMPTY_SYSTEM_SUMMARY,
+          apply: setSystemSummary,
+        },
+      ];
 
-      const nomResult = await Promise.allSettled([
-        request(
-          periodoNomina
-            ? `/api/nomina?periodo=${encodeURIComponent(periodoNomina)}`
-            : "/api/nomina"
-        ),
-      ]);
-      applySettledResult(
-        nomResult[0],
-        setNomina,
-        { periodos: [], stats: {}, workflow: { steps: [] }, resumen: [], asistencia: [], asistencia_resumen: [], seg_social: [], novedades: [] },
-        "Nómina",
-        failures
-      );
-      const nomValue = nomResult[0].status === "fulfilled" ? nomResult[0].value : null;
-      if (!periodoNomina && nomValue?.periodos?.length) setPeriodoNomina(nomValue.periodos[0]);
+      switch (view) {
+        case "dashboard":
+          loadTasks.push({
+            label: "Dashboard",
+            promise: request(`/api/dashboard?mes=${month}&ano=${year}`),
+            fallback: null,
+            apply: setDashboard,
+          });
+          break;
+        case "proveedores":
+          loadTasks.push({
+            label: "Proveedores",
+            promise: request("/api/proveedores"),
+            fallback: [],
+            apply: setProveedores,
+          });
+          break;
+        case "ingresos":
+          loadTasks.push(
+            {
+              label: "Ingresos",
+              promise: request(`/api/ingresos?mes=${month}&ano=${year}`),
+              fallback: [],
+              apply: setIngresos,
+            },
+            {
+              label: "Estado de cierre",
+              promise: request(`/api/reportes/cierre?mes=${month}&ano=${year}&include_details=false`),
+              fallback: null,
+              apply: (value) => setCierreMensual(value?.cierre || null),
+            },
+            {
+              label: "Análisis ingresos",
+              promise: request("/api/ingresos/analisis"),
+              fallback: null,
+              apply: setAnalisisIngresos,
+            }
+          );
+          break;
+        case "egresos":
+          loadTasks.push(
+            {
+              label: "Proveedores",
+              promise: request("/api/proveedores"),
+              fallback: [],
+              apply: setProveedores,
+            },
+            {
+              label: "Egresos",
+              promise: request(`/api/egresos?mes=${month}&ano=${year}`),
+              fallback: [],
+              apply: setEgresos,
+            },
+            {
+              label: "Estado de cierre",
+              promise: request(`/api/reportes/cierre?mes=${month}&ano=${year}&include_details=false`),
+              fallback: null,
+              apply: (value) => setCierreMensual(value?.cierre || null),
+            }
+          );
+          break;
+        case "nomina":
+          loadTasks.push({
+            label: "Nómina",
+            promise: request(
+              periodoNomina
+                ? `/api/nomina?periodo=${encodeURIComponent(periodoNomina)}`
+                : "/api/nomina"
+            ),
+            fallback: EMPTY_NOMINA,
+            apply: (value) => {
+              setNomina(value);
+              if (!periodoNomina && value?.periodos?.length) {
+                setPeriodoNomina((current) => current || value.periodos[0]);
+              }
+            },
+          });
+          break;
+        case "reportes":
+          loadTasks.push(
+            {
+              label: "Reportes",
+              promise: request(`/api/reportes/cierre?mes=${month}&ano=${year}`),
+              fallback: null,
+              apply: (value) => {
+                setReporte(value);
+                setCierreMensual(value?.cierre || null);
+              },
+            },
+            {
+              label: "Auditoría",
+              promise: request("/api/auditoria?limit=80"),
+              fallback: [],
+              apply: setAuditoria,
+            }
+          );
+          break;
+        default:
+          break;
+      }
+
+      const baseResults = await Promise.allSettled(loadTasks.map((task) => task.promise));
+      const failures = [];
+      baseResults.forEach((result, index) => {
+        applyLoadTask(loadTasks[index], result, failures);
+      });
 
       if (failures.length) {
         setError(failures.join(" | "));
@@ -2753,7 +2843,7 @@ function App() {
       if (silent) setRefreshing(false);
       else setLoading(false);
     }
-  }, [month, year, periodoNomina]);
+  }, [activeView, month, year, periodoNomina]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2815,20 +2905,19 @@ function App() {
   }, [notice]);
 
   useEffect(() => {
-    if (!authSession?.token) return;
-    request(
-      periodoNomina
-        ? `/api/nomina?periodo=${encodeURIComponent(periodoNomina)}`
-        : "/api/nomina"
-    )
-      .then(setNomina)
-      .catch((err) => setError(`Nómina: ${err.message}`));
-  }, [authSession?.token, periodoNomina]);
-
-  useEffect(() => {
     const handleAuthInvalid = () => {
       setAuthSession(null);
       setActiveView("dashboard");
+      setDashboard(null);
+      setSystemSummary(EMPTY_SYSTEM_SUMMARY);
+      setProveedores([]);
+      setIngresos([]);
+      setEgresos([]);
+      setNomina(EMPTY_NOMINA);
+      setCierreMensual(null);
+      setReporte(null);
+      setAuditoria([]);
+      setAnalisisIngresos(null);
       setLoading(false);
       setRefreshing(false);
       setError("Tu sesión expiró o dejó de ser válida. Inicia sesión de nuevo.");
@@ -2895,7 +2984,15 @@ function App() {
       setAuthSession(null);
       setActiveView("dashboard");
       setDashboard(null);
+      setSystemSummary(EMPTY_SYSTEM_SUMMARY);
+      setProveedores([]);
+      setIngresos([]);
+      setEgresos([]);
+      setNomina(EMPTY_NOMINA);
+      setCierreMensual(null);
       setReporte(null);
+      setAuditoria([]);
+      setAnalisisIngresos(null);
       setError("");
       setLoading(false);
       notify("Sesión cerrada", "success");
@@ -2987,36 +3084,36 @@ function App() {
         )}
         {!loading && activeView === "caja" && (
           <CajaView
-            reload={() => loadData({ silent: true })}
+            reload={() => loadData("caja", { silent: true })}
             setError={setError}
             notify={notify}
           />
         )}
         {!loading && activeView === "proveedores" && (
-          <ProveedoresView proveedores={proveedores} reload={() => loadData({ silent: true })} setError={setError} notify={notify} />
+          <ProveedoresView proveedores={proveedores} reload={() => loadData("proveedores", { silent: true })} setError={setError} notify={notify} />
         )}
         {!loading && activeView === "ingresos" && (
           <IngresosView
             ingresos={ingresos} year={year} month={month}
             setYear={setYear} setMonth={setMonth} years={years}
-            periodClosed={!!reporte?.cierre?.cerrado}
+            periodClosed={!!cierreMensual?.cerrado}
             analisis={analisisIngresos}
-            reload={() => loadData({ silent: true })} setError={setError} notify={notify}
+            reload={() => loadData("ingresos", { silent: true })} setError={setError} notify={notify}
           />
         )}
         {!loading && activeView === "egresos" && (
           <EgresosView
             egresos={egresos} proveedores={proveedores} year={year} month={month}
             setYear={setYear} setMonth={setMonth} years={years}
-            periodClosed={!!reporte?.cierre?.cerrado}
-            reload={() => loadData({ silent: true })} setError={setError} notify={notify}
+            periodClosed={!!cierreMensual?.cerrado}
+            reload={() => loadData("egresos", { silent: true })} setError={setError} notify={notify}
           />
         )}
         {!loading && activeView === "nomina" && (
           <NominaView
             nomina={nomina} periodoNomina={periodoNomina}
             setPeriodoNomina={setPeriodoNomina}
-            reload={() => loadData({ silent: true })}
+            reload={() => loadData("nomina", { silent: true })}
             setError={setError}
             notify={notify}
           />
@@ -3026,7 +3123,7 @@ function App() {
             reporte={reporte} year={year} month={month}
             setYear={setYear} setMonth={setMonth} years={years}
             auditoria={auditoria}
-            reload={() => loadData({ silent: true })}
+            reload={() => loadData("reportes", { silent: true })}
             setError={setError} notify={notify}
           />
         )}
