@@ -215,9 +215,11 @@ class _PgConnectionWrapper:
 
         if is_insert:
             row = self._cur.fetchone()
-            if row:
-                self._last_id = row[0]  # RETURNING id → primera columna
-                return _ScalarCursor(self._last_id)
+            if row is not None:
+                inserted_id = row[0]
+                if inserted_id is not None:
+                    self._last_id = int(inserted_id)
+                    return _ScalarCursor(self._last_id)
 
         return _PgCursorWrapper(self._cur)
 
@@ -271,6 +273,10 @@ class _ScalarCursor:
 
     def __init__(self, value):
         self._value = value
+
+    @property
+    def lastrowid(self):
+        return self._value
 
     def fetchone(self):
         return _RowProxy((self._value,), [("id", None, None, None, None, None, None)])
