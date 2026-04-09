@@ -119,7 +119,14 @@ def run():
     ingresos = assert_ok(api_get("/api/ingresos?mes=3&ano=2026"))
     assert isinstance(ingresos, list)
 
-    ingreso_date = f"2026-03-{min(int(stamp[-2:]) % 28 + 1, 28):02d}"
+    apertura_caja = api_post("/api/caja", json={
+        "fecha": "2026-03-27",
+        "saldo_inicial": 10000,
+        "observaciones": "Smoke apertura inicial caja",
+    })
+    assert apertura_caja.status_code == 200, apertura_caja.text
+
+    ingreso_date = "2026-03-28"
     created_ingreso = api_post("/api/ingresos", json={
         "fecha": ingreso_date,
         "caja": 12345,
@@ -154,6 +161,7 @@ def run():
         "nit": provider["nit"],
         "valor": 9999,
         "tipo_gasto": "GASTO",
+        "canal_pago": "Caja",
         "factura_electronica": "NO",
         "observaciones": "Smoke test egreso",
     })
@@ -162,6 +170,12 @@ def run():
     smoke_egreso = next(e for e in egresos_after if e["observaciones"] == "Smoke test egreso")
     egreso_detail = assert_ok(api_get(f"/api/egresos/{smoke_egreso['id']}"))
     assert egreso_detail["valor"] == 9999
+    caja_mes = assert_ok(api_get("/api/caja?mes=3&ano=2026"))
+    caja_28 = next(item for item in caja_mes if item["fecha"] == "2026-03-28")
+    assert caja_28["has_current_base"] is False
+    assert caja_28["saldo_inicial"] == 10000
+    assert caja_28["ingresos_caja"] == 12345
+    assert caja_28["egresos_caja"] == 12499
     upload_support = api_post(
         f"/api/egresos/{smoke_egreso['id']}/soporte",
         files={"file": ("soporte.pdf", b"%PDF-1.4 smoke support", "application/pdf")},

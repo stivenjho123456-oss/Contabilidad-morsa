@@ -70,6 +70,7 @@ from database import (  # noqa: E402
     get_connection,
     get_cierre_mensual,
     get_caja_movimientos_detalle,
+    get_caja_snapshot_by_fecha,
     get_cuadres_caja,
     get_cuadre_caja_by_fecha,
     get_database_health,
@@ -1004,17 +1005,22 @@ def caja_hoy():
         from datetime import date as _date
         today = _date.today().strftime("%Y-%m-%d")
         cuadre = get_cuadre_caja_by_fecha(today)
+        snapshot = get_caja_snapshot_by_fecha(today)
         detalle = get_caja_movimientos_detalle(today)
         movs = detalle["resumen"]
         saldo_sugerido = get_saldo_inicial_sugerido(today)
         apertura = get_caja_apertura_context(today)
-        saldo_operativo = float(cuadre["saldo_inicial"]) if cuadre else float(saldo_sugerido or 0)
-        saldo_actual = round(saldo_operativo + float(movs["ingresos_caja"] or 0) - float(movs["egresos_caja"] or 0), 2)
-        saldo_contado = cuadre.get("saldo_real") if cuadre else None
+        saldo_operativo = float(snapshot["saldo_inicial"]) if snapshot else float(saldo_sugerido or 0)
+        saldo_actual = float(snapshot["saldo_esperado"]) if snapshot else round(
+            saldo_operativo + float(movs["ingresos_caja"] or 0) - float(movs["egresos_caja"] or 0),
+            2,
+        )
+        saldo_contado = snapshot.get("saldo_real") if snapshot else None
         diferencia_arqueo = round(float(saldo_contado) - saldo_actual, 2) if saldo_contado is not None else None
         return {
             "fecha": today,
             "cuadre": cuadre,
+            "snapshot": snapshot,
             "movimientos": movs,
             "saldo_inicial_sugerido": saldo_sugerido,
             "saldo_inicial_operativo": saldo_operativo,

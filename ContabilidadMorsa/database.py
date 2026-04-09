@@ -5,7 +5,7 @@ import json
 import re
 import threading
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 
@@ -1953,7 +1953,7 @@ def sync_nomina_to_egresos(periodo=None):
 
 def _get_caja_movimientos_from_conn(conn, fecha):
     row_ing = conn.execute(
-        "SELECT COALESCE(caja, 0) FROM ingresos WHERE fecha=?",
+        "SELECT COALESCE(SUM(caja), 0) FROM ingresos WHERE fecha=?",
         (fecha,)
     ).fetchone()
     ingresos_operativos = float(row_ing[0]) if row_ing else 0.0
@@ -1985,6 +1985,166 @@ def _get_caja_movimientos_from_conn(conn, fecha):
         'ajustes_salida': ajustes_salida,
         'egresos_caja': round(egresos_operativos + ajustes_salida, 2),
     }
+
+
+def _empty_caja_movimientos():
+    return {
+        'ingresos_operativos': 0.0,
+        'ajustes_entrada': 0.0,
+        'ingresos_caja': 0.0,
+        'egresos_operativos': 0.0,
+        'ajustes_salida': 0.0,
+        'egresos_caja': 0.0,
+    }
+
+
+def _get_caja_daily_movements_map(conn, end_date=None):
+    filters = []
+    params = []
+    if end_date:
+        filters.append('fecha<=?')
+        params.append(end_date)
+    filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
+
+    movement_map = {}
+
+    ingresos_rows = conn.execute(
+        f'''
+        SELECT fecha, COALESCE(SUM(caja), 0) AS total
+        FROM ingresos
+        WHERE COALESCE(caja, 0) > 0{filter_sql}
+        GROUP BY fecha
+        ''',
+        params,
+    ).fetchall()
+    for row in ingresos_rows:
+        item = movement_map.setdefault(row['fecha'], _empty_caja_movimientos())
+        item['ingresos_operativos'] = float(row['total'] or 0)
+
+    egresos_rows = conn.execute(
+        f'''
+        SELECT fecha, COALESCE(SUM(valor), 0) AS total
+        FROM egresos
+        WHERE canal_pago='Caja' AND COALESCE(valor, 0) > 0{filter_sql}
+        GROUP BY fecha
+        ''',
+        params,
+    ).fetchall()
+    for row in egresos_rows:
+        item = movement_map.setdefault(row['fecha'], _empty_caja_movimientos())
+        item['egresos_operativos'] = float(row['total'] or 0)
+
+    ajustes_rows = conn.execute(
+        f'''
+        SELECT fecha, UPPER(COALESCE(tipo, '')) AS tipo, COALESCE(SUM(valor), 0) AS total
+        FROM caja_ajustes
+        WHERE COALESCE(valor, 0) > 0{filter_sql}
+        GROUP BY fecha, UPPER(COALESCE(tipo, ''))
+        ''',
+        params,
+    ).fetchall()
+    for row in ajustes_rows:
+        item = movement_map.setdefault(row['fecha'], _empty_caja_movimientos())
+        if row['tipo'] == 'ENTRADA':
+            item['ajustes_entrada'] = float(row['total'] or 0)
+        elif row['tipo'] == 'SALIDA':
+            item['ajustes_salida'] = float(row['total'] or 0)
+
+    for item in movement_map.values():
+        item['ingresos_caja'] = round(item['ingresos_operativos'] + item['ajustes_entrada'], 2)
+        item['egresos_caja'] = round(item['egresos_operativos'] + item['ajustes_salida'], 2)
+
+    return movement_map
+
+
+def _build_caja_snapshot(row, movs=None, saldo_inicial=None, *, source='manual_current_day'):
+    data = dict(row) if row else {}
+    movs = movs or _empty_caja_movimientos()
+    base = float(data.get('saldo_inicial') if saldo_inicial is None else (saldo_inicial or 0))
+    saldo_contado = data.get('saldo_real')
+    if saldo_contado is not None:
+        saldo_contado = float(saldo_contado)
+    data['id'] = data.get('id')
+    data['fecha'] = data.get('fecha')
+    data['observaciones'] = data.get('observaciones') or ''
+    data['created_at'] = data.get('created_at')
+    data['saldo_inicial'] = base
+    data['ingresos_caja'] = float(movs['ingresos_caja'] or 0)
+    data['egresos_caja'] = float(movs['egresos_caja'] or 0)
+    data['saldo_esperado'] = round(base + data['ingresos_caja'] - data['egresos_caja'], 2)
+    data['saldo_final'] = saldo_contado if saldo_contado is not None else data['saldo_esperado']
+    data['saldo_real'] = saldo_contado
+    data['diferencia'] = round(saldo_contado - data['saldo_esperado'], 2) if saldo_contado is not None else None
+    data['tiene_arqueo'] = saldo_contado is not None
+    data['cerrado'] = 0
+    data['has_current_base'] = source == 'manual_current_day'
+    data['source'] = source
+    return data
+
+
+def _get_caja_snapshots_until(conn, end_date=None):
+    params = []
+    query = 'SELECT * FROM cuadre_caja'
+    if end_date:
+        query += ' WHERE fecha<=?'
+        params.append(end_date)
+    query += ' ORDER BY fecha ASC'
+    explicit_rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+    if not explicit_rows:
+        return {}
+
+    explicit_map = {row['fecha']: row for row in explicit_rows}
+    movements_map = _get_caja_daily_movements_map(conn, end_date=end_date)
+    start_date = explicit_rows[0]['fecha']
+    candidate_dates = sorted(
+        fecha
+        for fecha in set(explicit_map) | set(movements_map)
+        if fecha >= start_date and (not end_date or fecha <= end_date)
+    )
+
+    snapshots = {}
+    saldo_arrastrado = None
+    for fecha in candidate_dates:
+        explicit = explicit_map.get(fecha)
+        movs = movements_map.get(fecha, _empty_caja_movimientos())
+        if explicit is not None:
+            snapshot = _build_caja_snapshot(explicit, movs, source='manual_current_day')
+        else:
+            if saldo_arrastrado is None:
+                continue
+            snapshot = _build_caja_snapshot(
+                {
+                    'fecha': fecha,
+                    'observaciones': '',
+                    'saldo_real': None,
+                    'created_at': None,
+                },
+                movs,
+                saldo_inicial=saldo_arrastrado,
+                source='carry_forward',
+            )
+        snapshots[fecha] = snapshot
+        saldo_arrastrado = snapshot['saldo_final']
+    return snapshots
+
+
+def _get_previous_caja_snapshot(conn, fecha):
+    target = date.fromisoformat(_validate_iso_date(fecha))
+    previous_day = (target - timedelta(days=1)).isoformat()
+    snapshots = _get_caja_snapshots_until(conn, end_date=previous_day)
+    if not snapshots:
+        return None
+    last_fecha = max(snapshots)
+    return snapshots[last_fecha]
+
+
+def get_caja_snapshot_by_fecha(fecha):
+    conn = get_connection()
+    try:
+        snapshots = _get_caja_snapshots_until(conn, end_date=_validate_iso_date(fecha))
+        return snapshots.get(fecha)
+    finally:
+        conn.close()
 
 
 def calcular_movimientos_caja(fecha):
@@ -2078,15 +2238,11 @@ def get_caja_apertura_context(fecha):
             'SELECT * FROM cuadre_caja WHERE fecha=?',
             (fecha,),
         ).fetchone()
-        previous_row = conn.execute(
-            'SELECT * FROM cuadre_caja WHERE fecha < ? ORDER BY fecha DESC LIMIT 1',
-            (fecha,),
-        ).fetchone()
+        previous = _get_previous_caja_snapshot(conn, fecha)
     finally:
         conn.close()
 
     current = _hydrate_cuadre_caja_row(current_row)
-    previous = _hydrate_cuadre_caja_row(previous_row)
     has_previous = previous is not None
     is_initial_opening = not has_previous
     if current:
@@ -2119,33 +2275,17 @@ def _hydrate_cuadre_caja_row(row):
         return None
     data = dict(row)
     movs = calcular_movimientos_caja(data['fecha'])
-    saldo_inicial = float(data.get('saldo_inicial') or 0)
-    saldo_contado = data.get('saldo_real')
-    if saldo_contado is not None:
-        saldo_contado = float(saldo_contado)
-    data['ingresos_caja'] = float(movs['ingresos_caja'] or 0)
-    data['egresos_caja'] = float(movs['egresos_caja'] or 0)
-    data['saldo_esperado'] = round(saldo_inicial + data['ingresos_caja'] - data['egresos_caja'], 2)
-    data['saldo_final'] = saldo_contado if saldo_contado is not None else data['saldo_esperado']
-    data['saldo_real'] = saldo_contado
-    data['diferencia'] = round(saldo_contado - data['saldo_esperado'], 2) if saldo_contado is not None else None
-    data['tiene_arqueo'] = saldo_contado is not None
-    data['cerrado'] = 0
-    return data
+    return _build_caja_snapshot(data, movs, source='manual_current_day')
 
 
 def get_saldo_inicial_sugerido(fecha):
     """Arrastra el último saldo final conocido, con o sin conteo físico."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM cuadre_caja WHERE fecha < ? ORDER BY fecha DESC LIMIT 1",
-            (fecha,)
-        ).fetchone()
-        if not row:
+        previous = _get_previous_caja_snapshot(conn, fecha)
+        if not previous:
             return 0.0
-        hydrated = _hydrate_cuadre_caja_row(row)
-        return float(hydrated['saldo_final'] or 0)
+        return float(previous['saldo_final'] or 0)
     finally:
         conn.close()
 
@@ -2171,17 +2311,17 @@ def get_caja_ajustes(mes=None, ano=None):
 def get_cuadres_caja(mes=None, ano=None):
     conn = get_connection()
     try:
-        query = 'SELECT * FROM cuadre_caja WHERE 1=1'
-        params = []
+        end_date = None
+        if mes and ano:
+            last_day = calendar.monthrange(int(ano), int(mes))[1]
+            end_date = date(int(ano), int(mes), last_day).isoformat()
+        snapshots = list(_get_caja_snapshots_until(conn, end_date=end_date).values())
         if mes:
-            query += " AND strftime('%m', fecha)=?"
-            params.append(f'{int(mes):02d}')
+            snapshots = [row for row in snapshots if month_year_from_date(row['fecha'])[0] == int(mes)]
         if ano:
-            query += " AND strftime('%Y', fecha)=?"
-            params.append(str(ano))
-        query += ' ORDER BY fecha DESC'
-        rows = conn.execute(query, params).fetchall()
-        return [_hydrate_cuadre_caja_row(r) for r in rows]
+            snapshots = [row for row in snapshots if month_year_from_date(row['fecha'])[1] == int(ano)]
+        snapshots.sort(key=lambda row: row['fecha'], reverse=True)
+        return snapshots
     finally:
         conn.close()
 

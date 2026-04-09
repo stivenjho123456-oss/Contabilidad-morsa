@@ -97,6 +97,7 @@ function CajaView({ reload, setError, notify }) {
   function handleNew()   { setEditing(hoy?.cuadre ?? null); setShowForm(true); }
 
   async function handleDelete(c) {
+    if (!c?.id) return;
     if (!window.confirm(`¿Eliminar el registro de caja del ${c.fecha}?`)) return;
     try {
       await request(`/api/caja/${c.id}`, { method: "DELETE" });
@@ -260,7 +261,7 @@ function CajaView({ reload, setError, notify }) {
         {loading ? (
           <div className="caja-empty">Cargando...</div>
         ) : lista.length === 0 ? (
-          <div className="caja-empty">Sin movimientos de caja guardados en este período.</div>
+          <div className="caja-empty">Sin movimientos ni bases de caja visibles en este período.</div>
         ) : (
           <table className="caja-table">
             <thead>
@@ -291,10 +292,14 @@ function CajaView({ reload, setError, notify }) {
                     <td style={{ color: d == null ? "#6b7280" : d > 0 ? "#16a34a" : d < 0 ? "#dc2626" : "#1e3a5f", fontWeight: 600 }}>
                       {d == null ? "—" : d > 0 ? `+${money(d)}` : money(d)}
                     </td>
-                    <td>{c.observaciones || "—"}</td>
+                    <td>{c.observaciones || (c.has_current_base ? "—" : "Arrastre automático")}</td>
                     <td className="caja-actions">
-                      <button className="caja-btn-edit" onClick={() => handleEdit(c)}>Editar</button>
-                      <button className="caja-btn-del" onClick={() => handleDelete(c)}>✕</button>
+                      <button className="caja-btn-edit" onClick={() => handleEdit(c)}>
+                        {c.id ? "Editar" : "Fijar base"}
+                      </button>
+                      {c.id ? (
+                        <button className="caja-btn-del" onClick={() => handleDelete(c)}>✕</button>
+                      ) : null}
                     </td>
                   </tr>
                 );
