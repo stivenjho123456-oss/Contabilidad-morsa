@@ -131,6 +131,12 @@ def bootstrap_admin_account(username: str, full_name: str, password: str, *, use
     if not auth_bootstrap_required():
         raise AppValidationError("La cuenta inicial ya fue configurada.")
     user = create_auth_user(username, full_name, hash_password(password), role="admin", active=True)
+    if user is None:
+        # El INSERT pudo haberse confirmado pero la extracción del id falló (PostgreSQL).
+        # Intentar recuperar el usuario recién creado por username.
+        user = get_auth_user_by_username(username)
+    if user is None:
+        raise AppValidationError("El usuario fue creado pero no pudo verificarse. Intenta iniciar sesión.")
     return _issue_session(user, user_agent=user_agent, ip_address=ip_address)
 
 

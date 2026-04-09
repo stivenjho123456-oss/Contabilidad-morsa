@@ -239,10 +239,18 @@ class _PgConnectionWrapper:
         self._conn.commit()
 
     def commit(self):
-        self._conn.commit()
+        try:
+            self._conn.commit()
+        except Exception:
+            # Con autocommit=True cada sentencia ya fue confirmada; commit() no tiene efecto
+            pass
 
     def rollback(self):
-        self._conn.rollback()
+        try:
+            self._conn.rollback()
+        except Exception:
+            # Con autocommit=True no hay transacción activa; rollback() no tiene efecto
+            pass
 
     def close(self):
         try:
