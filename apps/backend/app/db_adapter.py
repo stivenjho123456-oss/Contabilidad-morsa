@@ -190,7 +190,10 @@ class _PgConnectionWrapper:
         import psycopg2.errors as pg_errors  # importación diferida
 
         # Detectar INSERT para agregar RETURNING id automáticamente
-        is_insert = sql.strip().upper().startswith("INSERT")
+        sql_upper = sql.strip().upper()
+        is_insert = sql_upper.startswith("INSERT")
+        # Solo silenciar errores de esquema para DDL (CREATE/ALTER/DROP) — nunca para DML
+        is_ddl = bool(re.match(r"(CREATE|ALTER|DROP|TRUNCATE)\b", sql_upper))
         adapted = _adapt_sql(sql)
 
         if is_insert and "RETURNING" not in adapted.upper():
@@ -199,12 +202,14 @@ class _PgConnectionWrapper:
         try:
             self._cur.execute(adapted, params or ())
         except pg_errors.DuplicateColumn:
-            # ALTER TABLE ADD COLUMN sobre una columna que ya existe — ignorar
-            self._conn.rollback()
+            # ALTER TABLE ADD COLUMN sobre una columna que ya existe — ignorar solo en DDL
+            if not is_ddl:
+                raise
             return _EmptyCursor()
         except pg_errors.UndefinedTable:
-            # Tabla que aún no existe — ignorar (init_db usa IF NOT EXISTS)
-            self._conn.rollback()
+            # Tabla inexistente — ignorar solo en DDL (init_db usa IF NOT EXISTS)
+            if not is_ddl:
+                raise
             return _EmptyCursor()
         except Exception as exc:
             import psycopg2

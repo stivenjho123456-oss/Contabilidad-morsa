@@ -632,6 +632,10 @@ def on_startup():
                 "El primer request revelará si hay un problema de configuración."
             )
         try:
+            init_db()  # Crea tablas si no existen (IF NOT EXISTS — seguro re-ejecutar)
+        except Exception:
+            logger.exception("init_db() en modo PostgreSQL falló — puede que falten tablas.")
+        try:
             ensure_bootstrap_admin_from_env()
         except Exception:
             logger.exception("No se pudo verificar/bootstrappear el usuario inicial en PostgreSQL.")
