@@ -1209,8 +1209,7 @@ def delete_nomina_seg_social(seg_id):
     conn.close()
 
 
-def get_nomina_asistencia(periodo=None, empleado=None):
-    conn = get_connection()
+def _nomina_asistencia_conn(conn, periodo=None, empleado=None):
     query = 'SELECT * FROM nomina_asistencia WHERE 1=1'
     params = []
     if periodo and periodo != 'Todos':
@@ -1221,8 +1220,15 @@ def get_nomina_asistencia(periodo=None, empleado=None):
         params.append(f'%{empleado}%')
     query += ' ORDER BY empleado, dia'
     rows = conn.execute(query, params).fetchall()
-    conn.close()
     return [dict(r) for r in rows]
+
+
+def get_nomina_asistencia(periodo=None, empleado=None):
+    conn = get_connection()
+    try:
+        return _nomina_asistencia_conn(conn, periodo=periodo, empleado=empleado)
+    finally:
+        conn.close()
 
 
 @serialized_write
@@ -1319,8 +1325,7 @@ def delete_nomina_asistencia(asistencia_id):
         log_auditoria('nomina_asistencia', 'DELETE', asistencia_id, row['periodo'], row['empleado'], dict(row))
 
 
-def get_nomina_asistencia_resumen(periodo=None):
-    conn = get_connection()
+def _nomina_asistencia_resumen_conn(conn, periodo=None):
     query = '''
         SELECT
             periodo,
@@ -1347,12 +1352,18 @@ def get_nomina_asistencia_resumen(periodo=None):
         ORDER BY UPPER(COALESCE(empleado, '')), empleado
     '''
     rows = conn.execute(query, params).fetchall()
-    conn.close()
     return [dict(r) for r in rows]
 
 
-def get_nomina_novedades(periodo=None, search=''):
+def get_nomina_asistencia_resumen(periodo=None):
     conn = get_connection()
+    try:
+        return _nomina_asistencia_resumen_conn(conn, periodo=periodo)
+    finally:
+        conn.close()
+
+
+def _nomina_novedades_conn(conn, periodo=None, search=''):
     query = 'SELECT * FROM nomina_novedades WHERE 1=1'
     params = []
     if periodo and periodo != 'Todos':
@@ -1363,8 +1374,15 @@ def get_nomina_novedades(periodo=None, search=''):
         params.extend([f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%'])
     query += ' ORDER BY fecha DESC, empleado'
     rows = conn.execute(query, params).fetchall()
-    conn.close()
     return [dict(r) for r in rows]
+
+
+def get_nomina_novedades(periodo=None, search=''):
+    conn = get_connection()
+    try:
+        return _nomina_novedades_conn(conn, periodo=periodo, search=search)
+    finally:
+        conn.close()
 
 
 @serialized_write
@@ -1455,8 +1473,7 @@ def delete_nomina_novedad(novedad_id):
         log_auditoria('nomina_novedad', 'DELETE', novedad_id, row['periodo'], row['empleado'], dict(row))
 
 
-def get_nomina_periodos():
-    conn = get_connection()
+def _nomina_periodos_conn(conn):
     rows = conn.execute('''
         SELECT periodo FROM (
             SELECT DISTINCT periodo FROM nomina_resumen WHERE periodo IS NOT NULL AND periodo != ""
@@ -1467,12 +1484,18 @@ def get_nomina_periodos():
         )
         ORDER BY periodo DESC
     ''').fetchall()
-    conn.close()
     return [r[0] for r in rows]
 
 
-def get_nomina_resumen(periodo=None, search=''):
+def get_nomina_periodos():
     conn = get_connection()
+    try:
+        return _nomina_periodos_conn(conn)
+    finally:
+        conn.close()
+
+
+def _nomina_resumen_conn(conn, periodo=None, search=''):
     query = 'SELECT * FROM nomina_resumen WHERE 1=1'
     params = []
     if periodo and periodo != 'Todos':
@@ -1483,12 +1506,18 @@ def get_nomina_resumen(periodo=None, search=''):
         params.extend([f'%{search}%', f'%{search}%'])
     query += ' ORDER BY empleado'
     rows = conn.execute(query, params).fetchall()
-    conn.close()
     return [dict(r) for r in rows]
 
 
-def get_nomina_seg_social(periodo=None):
+def get_nomina_resumen(periodo=None, search=''):
     conn = get_connection()
+    try:
+        return _nomina_resumen_conn(conn, periodo=periodo, search=search)
+    finally:
+        conn.close()
+
+
+def _nomina_seg_social_conn(conn, periodo=None):
     query = 'SELECT * FROM nomina_seg_social WHERE 1=1'
     params = []
     if periodo and periodo != 'Todos':
@@ -1496,26 +1525,49 @@ def get_nomina_seg_social(periodo=None):
         params.append(periodo)
     query += ' ORDER BY grupo, concepto'
     rows = conn.execute(query, params).fetchall()
-    conn.close()
     return [dict(r) for r in rows]
 
 
-def get_nomina_stats(periodo=None):
-    resumen = get_nomina_resumen(periodo=periodo)
-    seg = get_nomina_seg_social(periodo=periodo)
-    novedades = get_nomina_novedades(periodo=periodo)
-    asistencia = get_nomina_asistencia_resumen(periodo=periodo)
+def get_nomina_seg_social(periodo=None):
+    conn = get_connection()
+    try:
+        return _nomina_seg_social_conn(conn, periodo=periodo)
+    finally:
+        conn.close()
+
+
+def _nomina_stats_conn(conn, periodo=None):
+    resumen = _nomina_resumen_conn(conn, periodo=periodo)
+    seg = _nomina_seg_social_conn(conn, periodo=periodo)
+    novedades = _nomina_novedades_conn(conn, periodo=periodo)
+    asistencia = _nomina_asistencia_resumen_conn(conn, periodo=periodo)
     return _build_nomina_stats_payload(resumen, seg, novedades, asistencia)
 
 
-def get_nomina_workflow(periodo=None):
+def get_nomina_stats(periodo=None):
+    conn = get_connection()
+    try:
+        return _nomina_stats_conn(conn, periodo=periodo)
+    finally:
+        conn.close()
+
+
+def _nomina_workflow_conn(conn, periodo=None):
     periodo = periodo or 'Todos'
-    asistencia = get_nomina_asistencia_resumen(periodo=periodo)
-    resumen = get_nomina_resumen(periodo=periodo)
-    seg = get_nomina_seg_social(periodo=periodo)
-    novedades = get_nomina_novedades(periodo=periodo)
-    synced = _count_nomina_sync_rows(periodo=periodo)
+    asistencia = _nomina_asistencia_resumen_conn(conn, periodo=periodo)
+    resumen = _nomina_resumen_conn(conn, periodo=periodo)
+    seg = _nomina_seg_social_conn(conn, periodo=periodo)
+    novedades = _nomina_novedades_conn(conn, periodo=periodo)
+    synced = _count_nomina_sync_rows_conn(conn, periodo=periodo)
     return _build_nomina_workflow_payload(periodo, resumen, seg, novedades, asistencia, synced)
+
+
+def get_nomina_workflow(periodo=None):
+    conn = get_connection()
+    try:
+        return _nomina_workflow_conn(conn, periodo=periodo)
+    finally:
+        conn.close()
 
 
 def _build_nomina_stats_payload(resumen, seg, novedades, asistencia):
@@ -1545,15 +1597,19 @@ def _build_nomina_stats_payload(resumen, seg, novedades, asistencia):
     }
 
 
+def _count_nomina_sync_rows_conn(conn, periodo=None):
+    query = 'SELECT COUNT(*) FROM egresos WHERE source_module=?'
+    params = ['NOMINA']
+    if periodo and periodo != 'Todos':
+        query += ' AND source_period=?'
+        params.append(periodo)
+    return conn.execute(query, params).fetchone()[0]
+
+
 def _count_nomina_sync_rows(periodo=None):
     conn = get_connection()
     try:
-        query = 'SELECT COUNT(*) FROM egresos WHERE source_module=?'
-        params = ['NOMINA']
-        if periodo and periodo != 'Todos':
-            query += ' AND source_period=?'
-            params.append(periodo)
-        return conn.execute(query, params).fetchone()[0]
+        return _count_nomina_sync_rows_conn(conn, periodo=periodo)
     finally:
         conn.close()
 
@@ -1606,11 +1662,36 @@ def _build_nomina_workflow_payload(periodo, resumen, seg, novedades, asistencia,
 
 
 def get_nomina_bundle(periodo=None, search=''):
-    periodos = get_nomina_periodos()
-    resumen_all = get_nomina_resumen(periodo=periodo)
-    seg_social = get_nomina_seg_social(periodo=periodo)
-    novedades_all = get_nomina_novedades(periodo=periodo)
-    asistencia_resumen = get_nomina_asistencia_resumen(periodo=periodo)
+    conn = get_connection()
+    try:
+        periodos = _nomina_periodos_conn(conn)
+        resumen_all = _nomina_resumen_conn(conn, periodo=periodo)
+        seg_social = _nomina_seg_social_conn(conn, periodo=periodo)
+        novedades_all = _nomina_novedades_conn(conn, periodo=periodo)
+        asistencia_resumen = _nomina_asistencia_resumen_conn(conn, periodo=periodo)
+        synced = _count_nomina_sync_rows_conn(conn, periodo=periodo)
+
+        if search:
+            search_q = str(search).strip().lower()
+            resumen = [
+                row for row in resumen_all
+                if search_q in f"{row.get('empleado') or ''} {row.get('cedula') or ''}".lower()
+            ]
+            novedades = [
+                row for row in novedades_all
+                if search_q in " ".join(
+                    str(row.get(field) or '').lower()
+                    for field in ('empleado', 'cedula', 'tipo_novedad', 'observaciones')
+                )
+            ]
+            asistencia = _nomina_asistencia_conn(conn, periodo=periodo, empleado=search)
+        else:
+            resumen = resumen_all
+            novedades = novedades_all
+            asistencia = _nomina_asistencia_conn(conn, periodo=periodo)
+    finally:
+        conn.close()
+
     stats = _build_nomina_stats_payload(resumen_all, seg_social, novedades_all, asistencia_resumen)
     workflow = _build_nomina_workflow_payload(
         periodo or 'Todos',
@@ -1618,27 +1699,8 @@ def get_nomina_bundle(periodo=None, search=''):
         seg_social,
         novedades_all,
         asistencia_resumen,
-        _count_nomina_sync_rows(periodo=periodo),
+        synced,
     )
-
-    if search:
-        query = str(search).strip().lower()
-        resumen = [
-            row for row in resumen_all
-            if query in f"{row.get('empleado') or ''} {row.get('cedula') or ''}".lower()
-        ]
-        novedades = [
-            row for row in novedades_all
-            if query in " ".join(
-                str(row.get(field) or '').lower()
-                for field in ('empleado', 'cedula', 'tipo_novedad', 'observaciones')
-            )
-        ]
-        asistencia = get_nomina_asistencia(periodo=periodo, empleado=search)
-    else:
-        resumen = resumen_all
-        novedades = novedades_all
-        asistencia = get_nomina_asistencia(periodo=periodo)
 
     return {
         'periodos': periodos,
