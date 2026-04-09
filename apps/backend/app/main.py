@@ -95,6 +95,16 @@ from database import (  # noqa: E402
     set_cierre_mensual,
     sync_nomina_to_egresos,
 )
+from auth_service import (  # noqa: E402
+    SESSION_HEADER as API_TOKEN_HEADER,
+    SESSION_SCHEME as API_TOKEN_SCHEME,
+    auth_status as get_auth_status,
+    authenticate_user,
+    bootstrap_admin_account,
+    ensure_bootstrap_admin_from_env,
+    resolve_session,
+    revoke_session,
+)
 from backup_manager import (  # noqa: E402
     auto_recover_database,
     create_backup,
@@ -112,7 +122,6 @@ import migrate_nomina as migrate_nomina_module  # noqa: E402
 LOG_DIR = get_log_dir()
 LOG_FILE = LOG_DIR / "backend.log"
 ENABLE_DOCS = os.getenv("MORSA_ENABLE_DOCS") == "1"
-API_TOKEN_HEADER = "X-Contabilidad-Token"
 DEFAULT_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5175",
     "http://localhost:5175",
@@ -248,6 +257,18 @@ class CierreMensualPayload(BaseModel):
     observacion: str = ""
 
 
+class AuthLoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+class AuthBootstrapPayload(BaseModel):
+    username: str
+    full_name: str
+    password: str
+    password_confirm: str
+
+
 def _handle_validation(exc: Exception):
     if isinstance(exc, AppValidationError):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -270,8 +291,6 @@ def _startup_state():
         "db_health": get_database_health(),
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "log_file": str(LOG_FILE),
-        "session_token": os.getenv("MORSA_API_TOKEN") or secrets.token_urlsafe(32),
-        "session_issued_at": datetime.now().isoformat(timespec="seconds"),
     }
 
 
@@ -310,7 +329,10 @@ def _public_request_path(path: str):
     return (
         path == "/"
         or path == "/health"
-        or path == "/api/auth/session"
+        or path == "/api/auth/status"
+        or path == "/api/auth/login"
+        or path == "/api/auth/bootstrap"
+        or path == "/api/app/heartbeat"
         or path == "/api/app/window-close"
         or (ENABLE_DOCS and path in {"/docs", "/openapi.json"})
         or path == "/favicon.svg"
@@ -319,13 +341,21 @@ def _public_request_path(path: str):
     )
 
 
-def _current_session_token():
-    runtime = getattr(app.state, "runtime", None)
-    if runtime and runtime.get("session_token"):
-        return runtime["session_token"]
-    fallback = _startup_state()
-    app.state.runtime = fallback
-    return fallback["session_token"]
+def _parse_bearer_token(header_value: str | None):
+    raw = (header_value or "").strip()
+    if not raw:
+        return ""
+    parts = raw.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == API_TOKEN_SCHEME.lower():
+        return parts[1].strip()
+    return ""
+
+
+def _client_ip(request: Request):
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if forwarded:
+        return forwarded
+    return request.client.host if request.client else ""
 
 
 def _serialize_backup(info: dict[str, Any] | None):
@@ -542,13 +572,15 @@ async def auth_and_security_middleware(request: Request, call_next):
     if path != "/health":
         _touch_desktop_activity(path)
     if request.method != "OPTIONS" and is_api and not _public_request_path(path):
-        incoming_token = request.headers.get(API_TOKEN_HEADER, "")
-        expected_token = _current_session_token()
-        if not incoming_token or not secrets.compare_digest(incoming_token, expected_token):
+        incoming_token = _parse_bearer_token(request.headers.get(API_TOKEN_HEADER, ""))
+        session = resolve_session(incoming_token)
+        if not session:
             return _apply_security_headers(
                 JSONResponse(status_code=401, content={"ok": False, "detail": "Sesión inválida o vencida."}),
                 is_api=True,
             )
+        request.state.current_user = session["user"]
+        request.state.auth_session = session
     response = await call_next(request)
     return _apply_security_headers(response, is_api=is_api)
 
@@ -599,11 +631,16 @@ def on_startup():
                 "No se pudo verificar PostgreSQL al arrancar — continuando de todas formas. "
                 "El primer request revelará si hay un problema de configuración."
             )
+        try:
+            ensure_bootstrap_admin_from_env()
+        except Exception:
+            logger.exception("No se pudo verificar/bootstrappear el usuario inicial en PostgreSQL.")
         app.state.runtime["db_health"] = {"ok": verified, "backend": "postgresql"}
         return
 
     try:
         init_db()
+        ensure_bootstrap_admin_from_env()
         health = get_database_health()
         if not health["ok"]:
             logger.error("La base de datos falló integrity_check: %s", health)
@@ -627,17 +664,60 @@ def on_startup():
         raise RuntimeError("No fue posible iniciar la base de datos.") from exc
 
 
+@app.get("/api/auth/status")
+def auth_status():
+    return _api_ok(get_auth_status())
+
+
+@app.post("/api/auth/bootstrap")
+def auth_bootstrap(payload: AuthBootstrapPayload, request: Request):
+    if payload.password != payload.password_confirm:
+        raise HTTPException(status_code=400, detail="La confirmación de contraseña no coincide.")
+    try:
+        session = bootstrap_admin_account(
+            payload.username,
+            payload.full_name,
+            payload.password,
+            user_agent=request.headers.get("user-agent", ""),
+            ip_address=_client_ip(request),
+        )
+        return _api_ok(session, message="Cuenta inicial creada correctamente.")
+    except Exception as exc:
+        _handle_validation(exc)
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: AuthLoginPayload, request: Request):
+    session = authenticate_user(
+        payload.username,
+        payload.password,
+        user_agent=request.headers.get("user-agent", ""),
+        ip_address=_client_ip(request),
+    )
+    if not session:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas.")
+    return _api_ok(session, message="Sesión iniciada.")
+
+
 @app.get("/api/auth/session")
-def auth_session():
-    runtime = getattr(app.state, "runtime", _startup_state())
-    app.state.runtime = runtime
+def auth_session(request: Request):
+    session = getattr(request.state, "auth_session", None)
+    if not session:
+        raise HTTPException(status_code=401, detail="Sesión inválida o vencida.")
     return _api_ok(
         {
-            "token": runtime["session_token"],
             "header": API_TOKEN_HEADER,
-            "issued_at": runtime["session_issued_at"],
+            "scheme": API_TOKEN_SCHEME,
+            "expires_at": session["expires_at"],
+            "user": session["user"],
         }
     )
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    revoke_session(_parse_bearer_token(request.headers.get(API_TOKEN_HEADER, "")))
+    return _api_ok(message="Sesión cerrada correctamente.")
 
 
 @app.post("/api/app/heartbeat")

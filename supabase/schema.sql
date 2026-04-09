@@ -163,6 +163,31 @@ CREATE TABLE IF NOT EXISTS caja_ajustes (
     created_at    TEXT NOT NULL
 );
 
+-- ── Usuarios / autenticación ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS usuarios (
+    id             SERIAL PRIMARY KEY,
+    username       TEXT NOT NULL UNIQUE,
+    full_name      TEXT NOT NULL,
+    password_hash  TEXT NOT NULL,
+    role           TEXT NOT NULL DEFAULT 'admin',
+    active         INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    last_login_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id            SERIAL PRIMARY KEY,
+    user_id       INTEGER NOT NULL REFERENCES usuarios(id),
+    token_hash    TEXT NOT NULL UNIQUE,
+    created_at    TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL,
+    revoked_at    TEXT,
+    user_agent    TEXT,
+    ip_address    TEXT
+);
+
 -- ── Índices de rendimiento ────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_egresos_fecha      ON egresos(fecha);
 CREATE INDEX IF NOT EXISTS idx_egresos_canal      ON egresos(canal_pago);
@@ -172,3 +197,5 @@ CREATE INDEX IF NOT EXISTS idx_auditoria_created  ON auditoria(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cuadre_caja_fecha  ON cuadre_caja(fecha);
 CREATE INDEX IF NOT EXISTS idx_caja_ajustes_fecha ON caja_ajustes(fecha);
 CREATE INDEX IF NOT EXISTS idx_nomina_periodo     ON nomina_resumen(periodo);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp  ON auth_sessions(expires_at);

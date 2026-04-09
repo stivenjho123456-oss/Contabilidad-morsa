@@ -23,8 +23,17 @@ from datetime import datetime
 # ── Configuración ─────────────────────────────────────────────────────────────
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-if not DATABASE_URL:
-    print("ERROR: Define la variable DATABASE_URL con el connection string de Supabase.")
+# Soporte alternativo: parámetros individuales (evita problemas con contraseñas con caracteres especiales)
+PG_HOST     = os.getenv("PG_HOST", "").strip()
+PG_USER     = os.getenv("PG_USER", "postgres").strip()
+PG_PASSWORD = os.getenv("PG_PASSWORD", "").strip()
+PG_DBNAME   = os.getenv("PG_DBNAME", "postgres").strip()
+PG_PORT     = int(os.getenv("PG_PORT", "5432"))
+
+USE_PARAMS = bool(PG_HOST and PG_PASSWORD)
+
+if not DATABASE_URL and not USE_PARAMS:
+    print("ERROR: Define DATABASE_URL o las variables PG_HOST + PG_PASSWORD.")
     sys.exit(1)
 
 _default_sqlite = Path.home() / "Library" / "Application Support" / "Contabilidad Morsa" / "contabilidad.db"
@@ -47,6 +56,8 @@ TABLES = [
     "auditoria",
     "cuadre_caja",
     "caja_ajustes",
+    "usuarios",
+    "auth_sessions",
 ]
 
 # Columnas que son SERIAL en PostgreSQL y se omiten en INSERT (se resetean las secuencias al final)
@@ -128,11 +139,21 @@ def main():
     sqlite_conn = sqlite3.connect(str(SQLITE_PATH))
 
     print("Conectando a Supabase...")
-    if "sslmode" not in DATABASE_URL:
-        url = DATABASE_URL.rstrip("/") + "?sslmode=require"
+    if USE_PARAMS:
+        pg_conn = psycopg2.connect(
+            host=PG_HOST,
+            user=PG_USER,
+            password=PG_PASSWORD,
+            dbname=PG_DBNAME,
+            port=PG_PORT,
+            sslmode="require",
+        )
     else:
-        url = DATABASE_URL
-    pg_conn = psycopg2.connect(url)
+        if "sslmode" not in DATABASE_URL:
+            url = DATABASE_URL.rstrip("/") + "?sslmode=require"
+        else:
+            url = DATABASE_URL
+        pg_conn = psycopg2.connect(url)
     pg_conn.autocommit = False
     print("  Conexión exitosa.")
     print()

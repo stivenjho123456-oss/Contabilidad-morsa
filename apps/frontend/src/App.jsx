@@ -37,10 +37,17 @@ const EMPTY_SYSTEM_SUMMARY = {
   log_file: "",
   app_data_dir: "",
 };
-const PUBLIC_API_PATHS = new Set(["/api/auth/session"]);
+const AUTH_STORAGE_KEY = "morsa_auth_session";
+const AUTH_INVALID_EVENT = "morsa-auth-invalid";
+const PUBLIC_API_PATHS = new Set([
+  "/api/auth/status",
+  "/api/auth/login",
+  "/api/auth/bootstrap",
+  "/api/app/heartbeat",
+  "/api/app/window-close",
+]);
 const DESKTOP_HEARTBEAT_INTERVAL_MS = 10000;
 let apiSession = null;
-let apiSessionPromise = null;
 
 function money(value) {
   return `$ ${Number(value || 0).toLocaleString("es-CO", { maximumFractionDigits: 0 })}`;
@@ -67,7 +74,57 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
 
 function resetApiSession() {
   apiSession = null;
-  apiSessionPromise = null;
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
+}
+
+function emitAuthInvalid() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_INVALID_EVENT));
+  }
+}
+
+function normalizeApiSession(session) {
+  if (!session?.token) return null;
+  return {
+    token: String(session.token),
+    header: session.header || "Authorization",
+    scheme: session.scheme || "Bearer",
+    expires_at: session.expires_at || null,
+    user: session.user || null,
+  };
+}
+
+function persistApiSession(session) {
+  apiSession = normalizeApiSession(session);
+  if (typeof window !== "undefined") {
+    if (apiSession) {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(apiSession));
+    } else {
+      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    }
+  }
+  return apiSession;
+}
+
+function getStoredApiSession() {
+  if (apiSession?.token) return apiSession;
+  if (typeof window === "undefined") return null;
+  try {
+    apiSession = normalizeApiSession(JSON.parse(window.localStorage.getItem(AUTH_STORAGE_KEY) || "null"));
+  } catch {
+    apiSession = null;
+  }
+  if (!apiSession) return null;
+  if (apiSession.expires_at) {
+    const expiresAt = Date.parse(apiSession.expires_at);
+    if (!Number.isNaN(expiresAt) && expiresAt <= Date.now()) {
+      resetApiSession();
+      return null;
+    }
+  }
+  return apiSession;
 }
 
 function isPublicApiPath(path) {
@@ -92,50 +149,25 @@ async function parseApiError(res, fallbackMessage = "Error inesperado") {
 }
 
 async function ensureApiSession() {
-  if (apiSession?.token && apiSession?.header) return apiSession;
-  if (apiSessionPromise) return apiSessionPromise;
-  apiSessionPromise = (async () => {
-    let res;
-    try {
-      res = await fetchWithTimeout(`${API_URL}/api/auth/session`, {}, 15000);
-    } catch (err) {
-      if (err?.name === "AbortError") {
-        throw new Error("La autenticación tardó demasiado. Intenta de nuevo.");
-      }
-      throw new Error("No fue posible conectar con el servidor API.");
-    }
-    if (!res.ok) {
-      await parseApiError(res, "No fue posible iniciar la sesión.");
-    }
-    const payload = await res.json().catch(() => null);
-    const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
-    if (!data?.token || !data?.header) {
-      throw new Error("Respuesta inválida del servidor de autenticación.");
-    }
-    apiSession = data;
-    return apiSession;
-  })();
-  try {
-    return await apiSessionPromise;
-  } finally {
-    apiSessionPromise = null;
-  }
+  const session = getStoredApiSession();
+  if (session?.token) return session;
+  throw new Error("Debes iniciar sesión para continuar.");
 }
 
-async function fetchApi(path, options = {}, timeoutMs = 15000, allowRetry = true) {
+async function fetchApi(path, options = {}, timeoutMs = 15000) {
   const headers = buildApiHeaders(options.headers, options.body);
   if (!isPublicApiPath(path)) {
     const session = await ensureApiSession();
-    headers.set(session.header, session.token);
+    headers.set(session.header, `${session.scheme} ${session.token}`);
   }
   try {
     const res = await fetchWithTimeout(`${API_URL}${path}`, {
       ...options,
       headers,
     }, timeoutMs);
-    if (res.status === 401 && !isPublicApiPath(path) && allowRetry) {
+    if (res.status === 401 && !isPublicApiPath(path)) {
       resetApiSession();
-      return fetchApi(path, options, timeoutMs, false);
+      emitAuthInvalid();
     }
     return res;
   } catch (err) {
@@ -269,6 +301,139 @@ function Modal({ title, onClose, children }) {
           <button className="modal-x" onClick={onClose}>✕</button>
         </div>
         <div className="modal-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function AuthView({ requiresSetup, pending, error, onLogin, onBootstrap }) {
+  const [loginForm, setLoginForm] = useState({ username: "", password: "" });
+  const [setupForm, setSetupForm] = useState({
+    full_name: "",
+    username: "",
+    password: "",
+    password_confirm: "",
+  });
+
+  async function handleLoginSubmit(event) {
+    event.preventDefault();
+    await onLogin(loginForm);
+  }
+
+  async function handleBootstrapSubmit(event) {
+    event.preventDefault();
+    await onBootstrap(setupForm);
+  }
+
+  return (
+    <div className="auth-shell">
+      <div className="auth-card">
+        <section className="auth-side">
+          <span className="auth-badge">Acceso Seguro</span>
+          <h1>Contabilidad Morsa</h1>
+          <p>
+            Controla ingresos, egresos, caja, nómina y respaldos desde una sesión
+            autenticada con perfil administrativo.
+          </p>
+          <div className="auth-side-list">
+            <div>Sesión protegida y persistente</div>
+            <div>Primer acceso con creación controlada del administrador</div>
+            <div>Preparado para entorno local y despliegue web</div>
+          </div>
+        </section>
+
+        <section className="auth-panel">
+          <div className="auth-panel-head">
+            <h2>{requiresSetup ? "Configurar Administrador" : "Iniciar Sesión"}</h2>
+            <p>
+              {requiresSetup
+                ? "Primer acceso detectado. Crea la cuenta administradora principal."
+                : "Ingresa con tu usuario y contraseña para acceder al sistema."}
+            </p>
+          </div>
+
+          {error && <div className="auth-error">{error}</div>}
+
+          {requiresSetup ? (
+            <form className="auth-form" onSubmit={handleBootstrapSubmit}>
+              <label className="auth-field">
+                <span>Nombre completo</span>
+                <input
+                  value={setupForm.full_name}
+                  onChange={(event) => setSetupForm((current) => ({ ...current, full_name: event.target.value }))}
+                  placeholder="Administrador General"
+                  autoComplete="name"
+                  required
+                />
+              </label>
+              <label className="auth-field">
+                <span>Usuario</span>
+                <input
+                  value={setupForm.username}
+                  onChange={(event) => setSetupForm((current) => ({ ...current, username: event.target.value }))}
+                  placeholder="admin"
+                  autoComplete="username"
+                  required
+                />
+              </label>
+              <label className="auth-field">
+                <span>Contraseña</span>
+                <input
+                  type="password"
+                  value={setupForm.password}
+                  onChange={(event) => setSetupForm((current) => ({ ...current, password: event.target.value }))}
+                  placeholder="Mínimo 10 caracteres"
+                  autoComplete="new-password"
+                  required
+                />
+              </label>
+              <label className="auth-field">
+                <span>Confirmar contraseña</span>
+                <input
+                  type="password"
+                  value={setupForm.password_confirm}
+                  onChange={(event) => setSetupForm((current) => ({ ...current, password_confirm: event.target.value }))}
+                  placeholder="Repite la contraseña"
+                  autoComplete="new-password"
+                  required
+                />
+              </label>
+              <div className="auth-note">
+                La contraseña debe incluir mínimo 10 caracteres, mayúscula, minúscula y número.
+              </div>
+              <button className="auth-submit" type="submit" disabled={pending}>
+                {pending ? "Creando cuenta..." : "Crear administrador"}
+              </button>
+            </form>
+          ) : (
+            <form className="auth-form" onSubmit={handleLoginSubmit}>
+              <label className="auth-field">
+                <span>Usuario</span>
+                <input
+                  value={loginForm.username}
+                  onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
+                  placeholder="Tu usuario"
+                  autoComplete="username"
+                  required
+                />
+              </label>
+              <label className="auth-field">
+                <span>Contraseña</span>
+                <input
+                  type="password"
+                  value={loginForm.password}
+                  onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
+                  placeholder="Tu contraseña"
+                  autoComplete="current-password"
+                  required
+                />
+              </label>
+              <button className="auth-submit" type="submit" disabled={pending}>
+                {pending ? "Validando..." : "Entrar"}
+              </button>
+            </form>
+          )}
+        </section>
       </div>
     </div>
   );
@@ -2704,9 +2869,13 @@ function App() {
   const [backups,          setBackups]          = useState([]);
   const [analisisIngresos, setAnalisisIngresos] = useState(null);
   const [periodoNomina, setPeriodoNomina] = useState("");
+  const [authSession, setAuthSession] = useState(() => getStoredApiSession());
+  const [authStatus, setAuthStatus] = useState({ requires_setup: false, users_count: 0, header: "Authorization", scheme: "Bearer" });
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
   const [error,   setError]   = useState("");
   const [notice,  setNotice]  = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const dbHealthKnown = typeof systemSummary?.db_health?.ok === "boolean";
   const dbHealthy = systemSummary?.db_health?.ok !== false;
@@ -2721,6 +2890,11 @@ function App() {
   }
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
+    if (!getStoredApiSession()?.token) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     if (silent) setRefreshing(true);
     else setLoading(true);
     setError("");
@@ -2775,7 +2949,58 @@ function App() {
     }
   }, [month, year, periodoNomina]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncAuthState = async () => {
+      setAuthChecking(true);
+      try {
+        const status = await request("/api/auth/status");
+        if (cancelled) return;
+        setAuthStatus(status);
+
+        const stored = getStoredApiSession();
+        if (!stored?.token) {
+          setAuthSession(null);
+          return;
+        }
+
+        try {
+          const session = await request("/api/auth/session");
+          if (cancelled) return;
+          const nextSession = persistApiSession({
+            ...stored,
+            header: session.header || stored.header,
+            scheme: session.scheme || stored.scheme,
+            expires_at: session.expires_at || stored.expires_at,
+            user: session.user || stored.user,
+          });
+          setAuthSession(nextSession);
+        } catch {
+          resetApiSession();
+          if (cancelled) return;
+          setAuthSession(null);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) {
+          setAuthChecking(false);
+          setLoading(false);
+        }
+      }
+    };
+
+    syncAuthState();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authSession?.token) return;
+    loadData();
+  }, [authSession?.token, loadData]);
 
   useEffect(() => {
     if (!notice) return;
@@ -2784,6 +3009,7 @@ function App() {
   }, [notice]);
 
   useEffect(() => {
+    if (!authSession?.token) return;
     request(
       periodoNomina
         ? `/api/nomina?periodo=${encodeURIComponent(periodoNomina)}`
@@ -2791,7 +3017,84 @@ function App() {
     )
       .then(setNomina)
       .catch((err) => setError(`Nómina: ${err.message}`));
-  }, [periodoNomina]);
+  }, [authSession?.token, periodoNomina]);
+
+  useEffect(() => {
+    const handleAuthInvalid = () => {
+      setAuthSession(null);
+      setActiveView("dashboard");
+      setLoading(false);
+      setRefreshing(false);
+      setError("Tu sesión expiró o dejó de ser válida. Inicia sesión de nuevo.");
+    };
+    window.addEventListener(AUTH_INVALID_EVENT, handleAuthInvalid);
+    return () => window.removeEventListener(AUTH_INVALID_EVENT, handleAuthInvalid);
+  }, []);
+
+  async function handleLogin(credentials) {
+    setAuthSubmitting(true);
+    setError("");
+    try {
+      const session = await request("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify(credentials),
+      });
+      const nextSession = persistApiSession(session);
+      setAuthSession(nextSession);
+      setAuthStatus((current) => ({
+        ...(current || {}),
+        requires_setup: false,
+        users_count: Math.max(current?.users_count || 0, 1),
+      }));
+      notify("Sesión iniciada correctamente", "success");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
+  async function handleBootstrap(payload) {
+    setAuthSubmitting(true);
+    setError("");
+    try {
+      const session = await request("/api/auth/bootstrap", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const nextSession = persistApiSession(session);
+      setAuthSession(nextSession);
+      setAuthStatus((current) => ({
+        ...(current || {}),
+        requires_setup: false,
+        users_count: 1,
+      }));
+      notify("Administrador inicial creado correctamente", "success");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      if (getStoredApiSession()?.token) {
+        await request("/api/auth/logout", { method: "POST" });
+      }
+    } catch {
+      // Si el token ya no es válido, igual cerramos sesión localmente.
+    } finally {
+      resetApiSession();
+      setAuthSession(null);
+      setActiveView("dashboard");
+      setDashboard(null);
+      setReporte(null);
+      setError("");
+      setLoading(false);
+      notify("Sesión cerrada", "success");
+    }
+  }
 
   useEffect(() => {
     let stopped = false;
@@ -2832,6 +3135,29 @@ function App() {
     };
   }, []);
 
+  if (authChecking) {
+    return (
+      <div className="auth-shell">
+        <div className="loading-card">Verificando acceso...</div>
+      </div>
+    );
+  }
+
+  if (!authSession?.token) {
+    return (
+      <>
+        <Toast notice={notice} onClose={() => setNotice(null)} />
+        <AuthView
+          requiresSetup={authStatus.requires_setup}
+          pending={authSubmitting}
+          error={error}
+          onLogin={handleLogin}
+          onBootstrap={handleBootstrap}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="app-shell">
       <Toast notice={notice} onClose={() => setNotice(null)} />
@@ -2855,6 +3181,15 @@ function App() {
           <strong className={`health-chip ${dbHealthy ? "ok" : "bad"}`}>
             {dbHealthy ? "Base estable" : "Base degradada"}
           </strong>
+          <div className="sidebar-user">
+            <strong>{authSession.user?.full_name || authSession.user?.username}</strong>
+            <span>
+              {authSession.user?.role === "admin" ? "Administrador" : authSession.user?.role || "Usuario"}
+            </span>
+          </div>
+          <button type="button" className="sidebar-logout" onClick={handleLogout}>
+            Cerrar sesión
+          </button>
           <br />
           SQLite local<br />FastAPI + React
           <br />

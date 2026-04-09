@@ -2,7 +2,7 @@
 *, *::before, *::after { box-sizing: border-box; }
 body {
   margin: 0;
-  min-width: 1180px;
+  min-width: 320px;
   font-family: "Segoe UI", system-ui, sans-serif;
   background: linear-gradient(180deg, #f6f7fb 0%, #eaf1f8 100%);
   color: #14213d;
@@ -16,8 +16,180 @@ h2, h3, h4 { margin: 0; }
 /* ── Layout ────────────────────────────────────────────────────────────────── */
 .app-shell {
   min-height: 100vh;
+  min-width: 1180px;
   display: grid;
   grid-template-columns: 240px 1fr;
+}
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at top left, rgba(30, 58, 95, 0.16), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(21, 128, 61, 0.12), transparent 24%),
+    linear-gradient(180deg, #edf3f9 0%, #e4edf7 100%);
+}
+
+.auth-card {
+  width: min(980px, 100%);
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(380px, 1.1fr);
+  background: white;
+  border-radius: 26px;
+  overflow: hidden;
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.auth-side {
+  background: linear-gradient(180deg, #10253b 0%, #173553 100%);
+  color: white;
+  padding: 36px 34px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.auth-badge {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.1);
+  color: #dbeafe;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.auth-side h1 {
+  font-size: 2rem;
+  line-height: 1.02;
+}
+
+.auth-side p {
+  color: #c7d2df;
+  line-height: 1.65;
+}
+
+.auth-side-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.auth-side-list div {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.07);
+  color: #e2e8f0;
+  line-height: 1.45;
+}
+
+.auth-panel {
+  padding: 36px 34px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  justify-content: center;
+}
+
+.auth-panel-head {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-panel-head h2 {
+  font-size: 1.7rem;
+  color: #173553;
+}
+
+.auth-panel-head p {
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-field {
+  display: grid;
+  gap: 7px;
+}
+
+.auth-field span {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #334155;
+}
+
+.auth-field input {
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid #d6e0ec;
+  background: #f8fbff;
+  padding: 0 14px;
+  color: #10253b;
+}
+
+.auth-field input:focus {
+  outline: 0;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.auth-note {
+  font-size: 0.8rem;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.auth-error {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.auth-submit {
+  border: 0;
+  height: 46px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #1d4ed8 0%, #1d4ed8 48%, #1e40af 100%);
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.24);
+}
+
+.auth-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+@media (max-width: 860px) {
+  .auth-shell {
+    padding: 18px;
+  }
+
+  .auth-card {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-side,
+  .auth-panel {
+    padding: 26px 22px;
+  }
+
+  .auth-side h1 {
+    font-size: 1.7rem;
+  }
 }
 
 /* ── Sidebar ───────────────────────────────────────────────────────────────── */
@@ -52,6 +224,20 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
 .nav-link:hover { background: rgba(255,255,255,0.07); color: white; }
 .nav-link.active { background: rgba(255,255,255,0.12); color: white; font-weight: 600; }
 .sidebar-footer { padding: 12px 20px 18px; font-size: 0.75rem; color: #7f93a8; line-height: 1.6; border-top: 1px solid rgba(255,255,255,0.07); }
+.sidebar-user { display: flex; flex-direction: column; gap: 1px; margin: 10px 0 8px; }
+.sidebar-user strong { color: white; font-size: 0.82rem; }
+.sidebar-user span { color: #9eb0c1; font-size: 0.72rem; text-transform: capitalize; }
+.sidebar-logout {
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.05);
+  color: #dbeafe;
+  padding: 8px 10px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.sidebar-logout:hover { background: rgba(255,255,255,0.1); }
 .health-chip { font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
 .health-chip.ok  { background: #14532d; color: #86efac; }
 .health-chip.bad { background: #7f1d1d; color: #fca5a5; }

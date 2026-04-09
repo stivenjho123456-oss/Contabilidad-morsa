@@ -2,6 +2,7 @@ import sqlite3
 import os
 import calendar
 import json
+import re
 import threading
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -140,6 +141,25 @@ def _clean_text(value):
 
 def _json_dump(value):
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _extract_inserted_id(cursor):
+    lastrowid = getattr(cursor, 'lastrowid', None)
+    if lastrowid:
+        return int(lastrowid)
+    if hasattr(cursor, 'fetchone'):
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        try:
+            return int(row['id'])
+        except Exception:
+            pass
+        try:
+            return int(row[0])
+        except Exception:
+            return None
+    return None
 
 
 @serialized_write
@@ -295,6 +315,34 @@ def init_db():
                 observaciones  TEXT,
                 created_at     TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                username       TEXT NOT NULL UNIQUE,
+                full_name      TEXT NOT NULL,
+                password_hash  TEXT NOT NULL,
+                role           TEXT NOT NULL DEFAULT 'admin',
+                active         INTEGER NOT NULL DEFAULT 1,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL,
+                last_login_at  TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL,
+                token_hash    TEXT NOT NULL UNIQUE,
+                created_at    TEXT NOT NULL,
+                expires_at    TEXT NOT NULL,
+                last_seen_at  TEXT NOT NULL,
+                revoked_at    TEXT,
+                user_agent    TEXT,
+                ip_address    TEXT,
+                FOREIGN KEY (user_id) REFERENCES usuarios(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
         ''')
         _ensure_column(conn, 'egresos', 'source_module', 'TEXT')
         _ensure_column(conn, 'egresos', 'source_ref', 'TEXT')
@@ -349,6 +397,276 @@ def get_auditoria(limit=120):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def _normalize_username(value):
+    username = _clean_text(value).lower()
+    if not username:
+        raise AppValidationError('El usuario es obligatorio.')
+    if len(username) < 3 or len(username) > 60:
+        raise AppValidationError('El usuario debe tener entre 3 y 60 caracteres.')
+    if not re.fullmatch(r'[a-z0-9._@-]+', username):
+        raise AppValidationError('El usuario solo puede incluir letras, números, punto, guion, guion bajo y @.')
+    return username
+
+
+def _public_auth_user(row):
+    if not row:
+        return None
+    data = dict(row)
+    data.pop('password_hash', None)
+    data['active'] = bool(data.get('active', 1))
+    return data
+
+
+def count_auth_users():
+    conn = get_connection()
+    try:
+        row = conn.execute('SELECT COUNT(*) FROM usuarios').fetchone()
+        return int(row[0] if row else 0)
+    finally:
+        conn.close()
+
+
+def auth_bootstrap_required():
+    return count_auth_users() == 0
+
+
+def get_auth_user_by_username(username, include_password=False):
+    normalized = _clean_text(username).lower()
+    if not normalized:
+        return None
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            'SELECT * FROM usuarios WHERE LOWER(username)=LOWER(?) LIMIT 1',
+            (normalized,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return dict(row) if include_password else _public_auth_user(row)
+
+
+def get_auth_user_by_id(user_id, include_password=False):
+    conn = get_connection()
+    try:
+        row = conn.execute('SELECT * FROM usuarios WHERE id=? LIMIT 1', (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return dict(row) if include_password else _public_auth_user(row)
+
+
+@serialized_write
+def create_auth_user(username, full_name, password_hash, role='admin', active=True):
+    normalized_username = _normalize_username(username)
+    normalized_name = _clean_text(full_name)
+    normalized_role = _clean_text(role).lower() or 'admin'
+    now = datetime.now().isoformat(timespec='seconds')
+
+    if len(normalized_name) < 3:
+        raise AppValidationError('El nombre completo debe tener al menos 3 caracteres.')
+    if not password_hash:
+        raise AppValidationError('La contraseña del usuario no pudo guardarse.')
+
+    conn = get_connection()
+    try:
+        duplicate = conn.execute(
+            'SELECT id FROM usuarios WHERE LOWER(username)=LOWER(?)',
+            (normalized_username,),
+        ).fetchone()
+        if duplicate:
+            raise AppValidationError('Ya existe un usuario con ese nombre.')
+
+        cursor = conn.execute(
+            '''
+            INSERT INTO usuarios (username, full_name, password_hash, role, active, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?)
+            ''',
+            (
+                normalized_username,
+                normalized_name,
+                password_hash,
+                normalized_role,
+                1 if active else 0,
+                now,
+                now,
+            ),
+        )
+        user_id = _extract_inserted_id(cursor)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    user = get_auth_user_by_id(user_id)
+    log_auditoria('usuarios', 'CREATE', entidad_id=user_id, detalle=f'Usuario {normalized_username} creado.', snapshot=user)
+    return user
+
+
+@serialized_write
+def set_auth_last_login(user_id):
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec='seconds')
+        conn.execute(
+            'UPDATE usuarios SET last_login_at=?, updated_at=? WHERE id=?',
+            (now, now, user_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@serialized_write
+def cleanup_auth_sessions():
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec='seconds')
+        conn.execute(
+            'DELETE FROM auth_sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL',
+            (now,),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_auth_session_by_hash(token_hash):
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec='seconds')
+        row = conn.execute(
+            '''
+            SELECT
+                s.id AS session_id,
+                s.user_id AS session_user_id,
+                s.created_at AS session_created_at,
+                s.expires_at AS session_expires_at,
+                s.last_seen_at AS session_last_seen_at,
+                u.id AS user_id,
+                u.username,
+                u.full_name,
+                u.role,
+                u.active,
+                u.created_at AS user_created_at,
+                u.updated_at AS user_updated_at,
+                u.last_login_at
+            FROM auth_sessions s
+            JOIN usuarios u ON u.id = s.user_id
+            WHERE s.token_hash = ?
+              AND s.revoked_at IS NULL
+              AND s.expires_at > ?
+              AND u.active = 1
+            LIMIT 1
+            ''',
+            (token_hash, now),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    data = dict(row)
+    return {
+        'id': data['session_id'],
+        'user_id': data['session_user_id'],
+        'created_at': data['session_created_at'],
+        'expires_at': data['session_expires_at'],
+        'last_seen_at': data['session_last_seen_at'],
+        'user': {
+            'id': data['user_id'],
+            'username': data['username'],
+            'full_name': data['full_name'],
+            'role': data['role'],
+            'active': bool(data['active']),
+            'created_at': data['user_created_at'],
+            'updated_at': data['user_updated_at'],
+            'last_login_at': data['last_login_at'],
+        },
+    }
+
+
+@serialized_write
+def create_auth_session(user_id, token_hash, expires_at, user_agent='', ip_address=''):
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec='seconds')
+        conn.execute(
+            'DELETE FROM auth_sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL',
+            (now,),
+        )
+        cursor = conn.execute(
+            '''
+            INSERT INTO auth_sessions (user_id, token_hash, created_at, expires_at, last_seen_at, user_agent, ip_address)
+            VALUES (?,?,?,?,?,?,?)
+            ''',
+            (
+                user_id,
+                token_hash,
+                now,
+                expires_at,
+                now,
+                _clean_text(user_agent),
+                _clean_text(ip_address),
+            ),
+        )
+        session_id = _extract_inserted_id(cursor)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    session = get_auth_session_by_hash(token_hash)
+    if session:
+        session['id'] = session_id or session['id']
+    return session
+
+
+@serialized_write
+def touch_auth_session(session_id):
+    conn = get_connection()
+    try:
+        conn.execute(
+            'UPDATE auth_sessions SET last_seen_at=? WHERE id=?',
+            (datetime.now().isoformat(timespec='seconds'), session_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@serialized_write
+def revoke_auth_session(token_hash):
+    conn = get_connection()
+    try:
+        conn.execute(
+            'UPDATE auth_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL',
+            (datetime.now().isoformat(timespec='seconds'), token_hash),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ─── Proveedores ────────────────────────────────────────────────────────────

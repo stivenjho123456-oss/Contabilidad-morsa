@@ -25,9 +25,20 @@ from app.main import app
 
 
 client = TestClient(app)
-session_payload = client.get("/api/auth/session").json()
+status_payload = client.get("/api/auth/status").json()
+status_data = status_payload["data"]
+if status_data["requires_setup"]:
+    bootstrap_payload = {
+        "username": "admin",
+        "full_name": "Administrador Smoke",
+        "password": "Admin12345",
+        "password_confirm": "Admin12345",
+    }
+    session_payload = client.post("/api/auth/bootstrap", json=bootstrap_payload).json()
+else:
+    session_payload = client.post("/api/auth/login", json={"username": "admin", "password": "Admin12345"}).json()
 AUTH_DATA = session_payload["data"]
-AUTH_HEADERS = {AUTH_DATA["header"]: AUTH_DATA["token"]}
+AUTH_HEADERS = {AUTH_DATA["header"]: f"{AUTH_DATA['scheme']} {AUTH_DATA['token']}"}
 
 
 def api_get(path, **kwargs):
@@ -67,6 +78,12 @@ def run():
 
     unauthorized = client.get("/api/system/summary")
     assert unauthorized.status_code == 401, unauthorized.text
+
+    auth_status = assert_ok(client.get("/api/auth/status"))
+    assert "requires_setup" in auth_status
+
+    session = assert_ok(api_get("/api/auth/session"))
+    assert session["user"]["username"] == "admin"
 
     root_html = client.get("/", headers={"accept": "text/html"})
     if FRONTEND_DIST.exists():
@@ -251,6 +268,15 @@ def run():
 
     missing = api_get("/api/proveedores/999999999")
     assert missing.status_code == 404, missing.text
+
+    logout = api_post("/api/auth/logout")
+    assert logout.status_code == 200, logout.text
+
+    expired_session = client.get("/api/auth/session", headers=AUTH_HEADERS)
+    assert expired_session.status_code == 401, expired_session.text
+
+    relogin = client.post("/api/auth/login", json={"username": "admin", "password": "Admin12345"})
+    assert relogin.status_code == 200, relogin.text
 
     print("Backend smoke test OK")
 
