@@ -161,35 +161,29 @@ def ensure_bootstrap_admin_from_env():
 
 
 def authenticate_user(username: str, password: str, *, user_agent: str = "", ip_address: str = ""):
-    # ⚠️ FAKE LOGIN - Retorna token fake sin guardar en BD
-    token = secrets.token_urlsafe(32)
-    expires_at = (_auth_now() + timedelta(hours=SESSION_DURATION_HOURS)).isoformat(timespec="seconds")
-    fake_user = {
-        "id": 999,
-        "username": username or "usuario",
-        "full_name": "Usuario Demo",
-        "role": "admin",
-        "active": 1,
-    }
-    return _session_response(fake_user, token, expires_at)
+    user = get_auth_user_by_username(username, include_password=True)
+    if not user or not user.get("active"):
+        return None
+    if not verify_password(password, user.get("password_hash", "")):
+        return None
+    public_user = {key: value for key, value in user.items() if key != "password_hash"}
+    public_user["active"] = bool(public_user.get("active", 1))
+    return _issue_session(public_user, user_agent=user_agent, ip_address=ip_address)
 
 
 def resolve_session(token: str):
-    # ⚠️ FAKE SESSION - Acepta cualquier token sin validar contra BD
     if not token:
         return None
+    session = get_auth_session_by_hash(_token_hash(token))
+    if not session:
+        return None
+    touch_auth_session(session["id"])
     return {
         "header": SESSION_HEADER,
         "scheme": SESSION_SCHEME,
-        "expires_at": (_auth_now() + timedelta(hours=SESSION_DURATION_HOURS)).isoformat(timespec="seconds"),
-        "user": {
-            "id": 999,
-            "username": "usuario",
-            "full_name": "Usuario Demo",
-            "role": "admin",
-            "active": 1,
-        },
-        "session_id": "fake-session",
+        "expires_at": session["expires_at"],
+        "user": session["user"],
+        "session_id": session["id"],
     }
 
 

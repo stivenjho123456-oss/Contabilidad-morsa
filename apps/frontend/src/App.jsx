@@ -301,22 +301,32 @@ function App() {
     const syncAuthState = async () => {
       setAuthChecking(true);
       try {
-        // ⚠️ FAKE AUTH - Crear sesión automática sin validación
-        const fakeSession = persistApiSession({
-          token: "fake-token-" + Math.random().toString(36).substring(7),
-          header: "Authorization",
-          scheme: "Bearer",
-          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          user: {
-            id: 999,
-            username: "usuario",
-            full_name: "Usuario Demo",
-            role: "admin",
-            active: 1,
-          },
-        });
+        const status = await request("/api/auth/status");
         if (cancelled) return;
-        setAuthSession(fakeSession);
+        setAuthStatus(status);
+
+        const stored = getStoredApiSession();
+        if (!stored?.token) {
+          setAuthSession(null);
+          return;
+        }
+
+        try {
+          const session = await request("/api/auth/session");
+          if (cancelled) return;
+          const nextSession = persistApiSession({
+            ...stored,
+            header: session.header || stored.header,
+            scheme: session.scheme || stored.scheme,
+            expires_at: session.expires_at || stored.expires_at,
+            user: session.user || stored.user,
+          });
+          setAuthSession(nextSession);
+        } catch {
+          resetApiSession();
+          if (cancelled) return;
+          setAuthSession(null);
+        }
       } catch (err) {
         if (!cancelled) setError(err.message);
       } finally {
@@ -518,6 +528,9 @@ function App() {
               {authSession.user?.role === "admin" ? "Administrador" : authSession.user?.role || "Usuario"}
             </span>
           </div>
+          <button type="button" className="sidebar-logout" onClick={handleLogout}>
+            Cerrar sesión
+          </button>
           <br />
           Supabase Postgres<br />FastAPI + React
           <br />

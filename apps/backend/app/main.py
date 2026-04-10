@@ -633,7 +633,7 @@ async def auth_and_security_middleware(request: Request, call_next):
     mutating_api = is_api and request.method in {"POST", "PUT", "PATCH", "DELETE"} and not path.startswith("/api/auth/")
     if request.method != "OPTIONS" and is_api and not _public_request_path(path):
         incoming_token = _parse_bearer_token(request.headers.get(API_TOKEN_HEADER, ""))
-        session = resolve_session(incoming_token or "fake-token")  # ⚠️ resolve_session es fake, acepta cualquier token
+        session = resolve_session(incoming_token)
         if not session:
             return _apply_security_headers(
                 JSONResponse(status_code=401, content={"ok": False, "detail": "Sesión inválida o vencida."}),
