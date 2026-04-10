@@ -632,18 +632,15 @@ async def auth_and_security_middleware(request: Request, call_next):
     is_api = path.startswith("/api/")
     mutating_api = is_api and request.method in {"POST", "PUT", "PATCH", "DELETE"} and not path.startswith("/api/auth/")
     if request.method != "OPTIONS" and is_api and not _public_request_path(path):
-        # ⚠️ FAKE AUTH - Saltarse validación, crear usuario fake
-        request.state.current_user = {
-            "id": 999,
-            "username": "usuario",
-            "full_name": "Usuario Demo",
-            "role": "admin",
-            "active": 1,
-        }
-        request.state.auth_session = {
-            "user": request.state.current_user,
-            "session_id": "fake-session",
-        }
+        incoming_token = _parse_bearer_token(request.headers.get(API_TOKEN_HEADER, ""))
+        session = resolve_session(incoming_token or "fake-token")  # ⚠️ resolve_session es fake, acepta cualquier token
+        if not session:
+            return _apply_security_headers(
+                JSONResponse(status_code=401, content={"ok": False, "detail": "Sesión inválida o vencida."}),
+                is_api=True,
+            )
+        request.state.current_user = session["user"]
+        request.state.auth_session = session
     response = await call_next(request)
     if mutating_api and response.status_code < 400:
         _invalidate_runtime_caches()

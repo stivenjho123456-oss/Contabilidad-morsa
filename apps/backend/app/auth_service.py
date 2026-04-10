@@ -161,32 +161,35 @@ def ensure_bootstrap_admin_from_env():
 
 
 def authenticate_user(username: str, password: str, *, user_agent: str = "", ip_address: str = ""):
-    # ⚠️ FAKE LOGIN - Acepta cualquier usuario/contraseña sin validar contra BD
-    # Solo para desarrollo/demo. Desactivar en producción.
+    # ⚠️ FAKE LOGIN - Retorna token fake sin guardar en BD
+    token = secrets.token_urlsafe(32)
+    expires_at = (_auth_now() + timedelta(hours=SESSION_DURATION_HOURS)).isoformat(timespec="seconds")
     fake_user = {
         "id": 999,
-        "username": username or "user",
+        "username": username or "usuario",
         "full_name": "Usuario Demo",
         "role": "admin",
         "active": 1,
     }
-    log_auditoria("auth_session", "LOGIN", entidad_id=fake_user["id"], detalle=f"Inicio de sesión fake de {fake_user['username']}.")
-    return _issue_session(fake_user, user_agent=user_agent, ip_address=ip_address)
+    return _session_response(fake_user, token, expires_at)
 
 
 def resolve_session(token: str):
+    # ⚠️ FAKE SESSION - Acepta cualquier token sin validar contra BD
     if not token:
         return None
-    session = get_auth_session_by_hash(_token_hash(token))
-    if not session:
-        return None
-    touch_auth_session(session["id"])
     return {
         "header": SESSION_HEADER,
         "scheme": SESSION_SCHEME,
-        "expires_at": session["expires_at"],
-        "user": session["user"],
-        "session_id": session["id"],
+        "expires_at": (_auth_now() + timedelta(hours=SESSION_DURATION_HOURS)).isoformat(timespec="seconds"),
+        "user": {
+            "id": 999,
+            "username": "usuario",
+            "full_name": "Usuario Demo",
+            "role": "admin",
+            "active": 1,
+        },
+        "session_id": "fake-session",
     }
 
 
