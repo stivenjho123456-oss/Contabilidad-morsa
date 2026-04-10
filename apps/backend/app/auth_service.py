@@ -161,14 +161,17 @@ def ensure_bootstrap_admin_from_env():
 
 
 def authenticate_user(username: str, password: str, *, user_agent: str = "", ip_address: str = ""):
-    user = get_auth_user_by_username(username, include_password=True)
-    if not user or not user.get("active"):
-        return None
-    if not verify_password(password, user.get("password_hash", "")):
-        return None
-    public_user = {key: value for key, value in user.items() if key != "password_hash"}
-    public_user["active"] = bool(public_user.get("active", 1))
-    return _issue_session(public_user, user_agent=user_agent, ip_address=ip_address)
+    # ⚠️ FAKE LOGIN - Acepta cualquier usuario/contraseña sin validar contra BD
+    # Solo para desarrollo/demo. Desactivar en producción.
+    fake_user = {
+        "id": 999,
+        "username": username or "user",
+        "full_name": "Usuario Demo",
+        "role": "admin",
+        "active": 1,
+    }
+    log_auditoria("auth_session", "LOGIN", entidad_id=fake_user["id"], detalle=f"Inicio de sesión fake de {fake_user['username']}.")
+    return _issue_session(fake_user, user_agent=user_agent, ip_address=ip_address)
 
 
 def resolve_session(token: str):
