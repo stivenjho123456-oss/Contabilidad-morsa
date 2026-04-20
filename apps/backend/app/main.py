@@ -1688,6 +1688,7 @@ class InventarioItemPayload(BaseModel):
 class InventarioGuardarPayload(BaseModel):
     fecha: str
     items: list[InventarioItemPayload]
+    observaciones: str | None = None
 
 
 @app.get("/api/insumos")
@@ -1704,7 +1705,7 @@ def get_inventario(fecha: str = Query(...)):
 def save_inventario(payload: InventarioGuardarPayload, request: Request):
     try:
         usuario_id = request.state.current_user.get("id") if hasattr(request.state, "current_user") else None
-        save_inventario_diario(payload.fecha, payload.items, usuario_id=usuario_id)
+        save_inventario_diario(payload.fecha, payload.items, usuario_id=usuario_id, observaciones=payload.observaciones)
         return _api_ok(message="Inventario guardado correctamente.")
     except Exception as exc:
         _handle_validation(exc)

@@ -2555,7 +2555,7 @@ def get_inventario_diario(fecha):
 
 
 @serialized_write
-def save_inventario_diario(fecha, items, usuario_id=None):
+def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None):
     conn = get_connection()
     try:
         conn.execute('DELETE FROM inventario_diario WHERE fecha=?', (fecha,))
@@ -2572,6 +2572,12 @@ def save_inventario_diario(fecha, items, usuario_id=None):
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 (fecha, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, datetime.now().isoformat())
             )
+        conn.execute(
+            '''INSERT INTO inventario_turno (fecha, observaciones, usuario_id, created_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (fecha) DO UPDATE SET observaciones=EXCLUDED.observaciones''',
+            (fecha, observaciones, usuario_id, datetime.now().isoformat())
+        )
         conn.commit()
         log_auditoria('inventario_diario', 'SAVE', 0, fecha, f'Inventario del {fecha}', {'items': len(items)})
     except Exception:
