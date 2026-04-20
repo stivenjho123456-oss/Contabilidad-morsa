@@ -64,90 +64,169 @@ export function InventarioMobileView({ session, setError, notify }) {
     }
   }
 
+  function formatFechaDisplay(fechaStr) {
+    const [year, month, day] = fechaStr.split("-");
+    const meses = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+    return `${parseInt(day)} de ${meses[parseInt(month) - 1]} de ${year}`;
+  }
+
   const filtrados = insumos.filter((ins) =>
     ins.nombre.toLowerCase().includes(busqueda.toLowerCase())
   );
 
+  const byCategoria = {};
+  filtrados.forEach((ins) => {
+    const cat = ins.categoria || "General";
+    if (!byCategoria[cat]) byCategoria[cat] = [];
+    byCategoria[cat].push(ins);
+  });
+
+  const totalItems = insumos.length;
+  const itemsTraer = insumos.filter((ins) => registro[ins.id]?.estado === "traer").length;
+  const itemsHay = insumos.filter((ins) => !registro[ins.id] || registro[ins.id]?.estado === "hay").length;
+
   if (cargando) {
-    return <div className="mobile-loading">Cargando inventario...</div>;
+    return (
+      <div className="inv-loading">
+        <div className="inv-loading-inner">Cargando inventario...</div>
+      </div>
+    );
   }
 
   return (
-    <div className="inventario-mobile">
-      <div className="inventario-header">
-        <h1>📋 Inventario</h1>
+    <div className="inv-root">
+      {/* Header tipo formulario */}
+      <div className="inv-header">
+        <div className="inv-header-top">
+          <div className="inv-logo">📋</div>
+          <div className="inv-header-info">
+            <h1 className="inv-title">Control de Inventario</h1>
+            <p className="inv-subtitle">Turno diario de cocina</p>
+          </div>
+        </div>
+        <div className="inv-fecha-row">
+          <span className="inv-fecha-label">Fecha:</span>
+          <label className="inv-fecha-display" htmlFor="inv-fecha-input">
+            {formatFechaDisplay(fecha)}
+          </label>
+          <input
+            id="inv-fecha-input"
+            type="date"
+            value={fecha}
+            onChange={(e) => setFecha(e.target.value)}
+            className="inv-fecha-input"
+          />
+        </div>
+        <div className="inv-stats-row">
+          <div className="inv-stat inv-stat-total">
+            <strong>{totalItems}</strong>
+            <span>Total</span>
+          </div>
+          <div className="inv-stat inv-stat-hay">
+            <strong>{itemsHay}</strong>
+            <span>Hay</span>
+          </div>
+          <div className="inv-stat inv-stat-traer">
+            <strong>{itemsTraer}</strong>
+            <span>Traer</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Búsqueda */}
+      <div className="inv-busqueda-wrap">
+        <span className="inv-busqueda-icon">🔍</span>
         <input
-          type="date"
-          value={fecha}
-          onChange={(e) => setFecha(e.target.value)}
-          className="fecha-input"
+          type="text"
+          placeholder="Buscar insumo..."
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          className="inv-busqueda"
         />
       </div>
 
-      <input
-        type="text"
-        placeholder="Buscar insumo..."
-        value={busqueda}
-        onChange={(e) => setBusqueda(e.target.value)}
-        className="busqueda-input"
-      />
-
-      <div className="insumos-list">
-        {filtrados.map((ins) => {
-          const item = registro[ins.id] || { estado: "hay" };
-          const esHay = item.estado === "hay";
-          return (
-            <div key={ins.id} className="insumo-item">
-              <div className="insumo-nombre">
-                <strong>{ins.nombre}</strong>
-                <span className="insumo-categoria">{ins.categoria}</span>
-              </div>
-              <div className="insumo-controles">
-                <button
-                  className={`btn-estado ${esHay ? "activo" : ""}`}
-                  onClick={() => {
-                    setRegistro((cur) => ({
-                      ...cur,
-                      [ins.id]: { ...item, estado: "hay", cantidad: null },
-                    }));
-                  }}
-                >
-                  HAY
-                </button>
-                <button
-                  className={`btn-estado ${!esHay ? "activo" : ""}`}
-                  onClick={() => {
-                    setRegistro((cur) => ({
-                      ...cur,
-                      [ins.id]: { ...item, estado: "traer" },
-                    }));
-                  }}
-                >
-                  TRAER
-                </button>
-                {!esHay && (
-                  <input
-                    type="number"
-                    placeholder="Cant."
-                    value={item.cantidad || ""}
-                    onChange={(e) => {
-                      setRegistro((cur) => ({
-                        ...cur,
-                        [ins.id]: { ...item, cantidad: e.target.value ? parseFloat(e.target.value) : null },
-                      }));
-                    }}
-                    className="cantidad-input"
-                  />
-                )}
-              </div>
+      {/* Lista por categoría */}
+      <div className="inv-body">
+        {Object.entries(byCategoria).map(([categoria, items]) => (
+          <div key={categoria} className="inv-categoria-bloque">
+            <div className="inv-categoria-header">
+              <span className="inv-categoria-nombre">{categoria}</span>
+              <span className="inv-categoria-count">{items.length}</span>
             </div>
-          );
-        })}
+
+            <div className="inv-tabla">
+              <div className="inv-tabla-head">
+                <div className="inv-col-nombre">Ingrediente</div>
+                <div className="inv-col-existencia">Existencia</div>
+              </div>
+
+              {items.map((ins, idx) => {
+                const item = registro[ins.id] || { estado: "hay" };
+                const esHay = item.estado === "hay";
+                return (
+                  <div
+                    key={ins.id}
+                    className={`inv-fila ${!esHay ? "inv-fila-traer" : ""} ${idx % 2 === 0 ? "inv-fila-par" : ""}`}
+                  >
+                    <div className="inv-col-nombre">
+                      <span className="inv-insumo-nombre">{ins.nombre}</span>
+                    </div>
+
+                    <div className="inv-col-existencia">
+                      <div className="inv-toggles">
+                        <button
+                          className={`inv-btn-hay ${esHay ? "inv-btn-hay-activo" : ""}`}
+                          onClick={() =>
+                            setRegistro((cur) => ({
+                              ...cur,
+                              [ins.id]: { ...item, estado: "hay", cantidad: null },
+                            }))
+                          }
+                        >
+                          HAY
+                        </button>
+                        <button
+                          className={`inv-btn-traer ${!esHay ? "inv-btn-traer-activo" : ""}`}
+                          onClick={() =>
+                            setRegistro((cur) => ({
+                              ...cur,
+                              [ins.id]: { ...item, estado: "traer" },
+                            }))
+                          }
+                        >
+                          TRAER
+                        </button>
+                      </div>
+
+                      {!esHay && (
+                        <input
+                          type="text"
+                          placeholder="¿Cuánto? Ej: 1 bolsa, 2 latas..."
+                          value={item.notas || ""}
+                          onChange={(e) =>
+                            setRegistro((cur) => ({
+                              ...cur,
+                              [ins.id]: { ...item, notas: e.target.value },
+                            }))
+                          }
+                          className="inv-notas-input"
+                        />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
 
-      <button className="btn-guardar" onClick={guardar} disabled={guardando}>
-        {guardando ? "Guardando..." : "GUARDAR TURNO"}
-      </button>
+      {/* Botón guardar */}
+      <div className="inv-footer">
+        <button className="inv-btn-guardar" onClick={guardar} disabled={guardando}>
+          {guardando ? "Guardando..." : `✓ Guardar Turno — ${formatFechaDisplay(fecha)}`}
+        </button>
+      </div>
     </div>
   );
 }
