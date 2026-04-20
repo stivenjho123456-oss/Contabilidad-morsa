@@ -1431,7 +1431,7 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding-bottom: 100px;
+  padding-bottom: 0;
 }
 
 /* Categoría bloque */
@@ -1563,14 +1563,15 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 1px 4px rgba(0,0,0,0.07);
-  border: 2px dashed #e2e8f0;
+  margin: 0 12px;
+  margin-bottom: 100px;
 }
 .inv-extras-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  background: #f8faff;
+  background: #f0f4ff;
   border-bottom: 1px solid #e8edf4;
 }
 .inv-extras-titulo {
@@ -1585,24 +1586,24 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
   display: block;
   font-size: 11px;
   color: #94a3b8;
-  margin-top: 1px;
+  margin-top: 2px;
 }
 .inv-extras-add-btn {
-  border: 1.5px solid #1e3a5f;
+  border: none;
   border-radius: 8px;
-  background: white;
-  color: #1e3a5f;
+  background: #1e3a5f;
+  color: white;
   font-size: 13px;
   font-weight: 700;
-  padding: 6px 14px;
+  padding: 8px 16px;
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.15s;
 }
-.inv-extras-add-btn:hover { background: #eef4ff; }
+.inv-extras-add-btn:hover { background: #173553; }
 
 .inv-extras-empty {
-  padding: 16px 14px;
+  padding: 20px 14px;
   font-size: 13px;
   color: #aab4be;
   font-style: italic;
@@ -1620,40 +1621,42 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
 .inv-extra-inputs {
   flex: 1;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .inv-extra-nombre,
 .inv-extra-notas {
-  width: 100%;
+  flex: 1;
   border: 1.5px solid #e2e8f0;
   border-radius: 7px;
-  padding: 7px 10px;
+  padding: 8px 10px;
   font-size: 13px;
   color: #1e3a5f;
   background: white;
   outline: none;
   box-sizing: border-box;
+  min-width: 0;
 }
+.inv-extra-nombre { flex: 1.2; }
 .inv-extra-nombre:focus { border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30,58,95,0.1); }
-.inv-extra-notas { color: #555; }
+.inv-extra-notas:focus { border-color: #94a3b8; }
 .inv-extra-notas::placeholder,
 .inv-extra-nombre::placeholder { color: #bbb; font-style: italic; }
 .inv-extra-del {
   border: none;
-  background: #fee2e2;
-  color: #991b1b;
+  background: transparent;
+  color: #cbd5e1;
   border-radius: 7px;
-  width: 32px;
-  height: 32px;
-  font-size: 13px;
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: color 0.15s, background 0.15s;
 }
-.inv-extra-del:hover { background: #fecaca; }
+.inv-extra-del:hover { background: #fee2e2; color: #991b1b; }
 
 /* Footer fijo */
 .inv-footer {
