@@ -11,6 +11,7 @@ export const NAV_ITEMS = [
   { key: "nomina", label: "Nomina" },
   { key: "proveedores", label: "Proveedores y Base" },
   { key: "reportes", label: "Reportes" },
+  { key: "inventario", label: "Inventario" },
 ];
 
 export const TIPO_COLORS = [

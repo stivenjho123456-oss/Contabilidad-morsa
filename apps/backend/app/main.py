@@ -77,6 +77,8 @@ from database import (  # noqa: E402
     get_dashboard_stats,
     get_egresos,
     get_ingresos,
+    get_insumos,
+    get_inventario_diario,
     get_nomina_bundle,
     get_nomina_novedades,
     get_nomina_resumen,
@@ -91,6 +93,7 @@ from database import (  # noqa: E402
     month_year_from_date,
     period_from_month_year,
     save_cuadre_caja,
+    save_inventario_diario,
     save_nomina_asistencia,
     save_nomina_novedad,
     save_egreso,
@@ -1670,6 +1673,40 @@ def export_nomina(periodo: str = Query(...)):
         ],
     )
     return _build_excel_response(wb, f'Nomina_{periodo.replace(" ", "_")}.xlsx')
+
+
+# ── Inventario Diario ──────────────────────────────────────────────────────────
+
+class InventarioItemPayload(BaseModel):
+    insumo_id: int
+    estado: str
+    cantidad: float | None = None
+    notas: str | None = None
+
+
+class InventarioGuardarPayload(BaseModel):
+    fecha: str
+    items: list[InventarioItemPayload]
+
+
+@app.get("/api/insumos")
+def get_insumos_list():
+    return _api_ok(get_insumos())
+
+
+@app.get("/api/inventario")
+def get_inventario(fecha: str = Query(...)):
+    return _api_ok(get_inventario_diario(fecha))
+
+
+@app.post("/api/inventario")
+def save_inventario(payload: InventarioGuardarPayload, request: Request):
+    try:
+        usuario_id = request.state.current_user.get("id") if hasattr(request.state, "current_user") else None
+        save_inventario_diario(payload.fecha, payload.items, usuario_id=usuario_id)
+        return _api_ok(message="Inventario guardado correctamente.")
+    except Exception as exc:
+        _handle_validation(exc)
 
 
 if FRONTEND_DIST_DIR.exists():

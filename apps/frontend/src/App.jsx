@@ -18,6 +18,8 @@ import { CajaView } from "./views/CajaView";
 import { DashboardView } from "./views/DashboardView";
 import { EgresosView } from "./views/EgresosView";
 import { IngresosView } from "./views/IngresosView";
+import { InventarioMobileView } from "./views/InventarioMobileView";
+import { InventarioAdminView } from "./views/InventarioAdminView";
 import { NominaView } from "./views/NominaView";
 import { ProveedoresView } from "./views/ProveedoresView";
 import { ReportesView } from "./views/ReportesView";
@@ -499,6 +501,15 @@ function App() {
     );
   }
 
+  if (authSession.user?.role === "cocina") {
+    return (
+      <>
+        <Toast notice={notice} onClose={() => setNotice(null)} />
+        <InventarioMobileView session={authSession} setError={setError} notify={notify} />
+      </>
+    );
+  }
+
   return (
     <div className="app-shell">
       <Toast notice={notice} onClose={() => setNotice(null)} />
@@ -601,6 +612,12 @@ function App() {
             setYear={setYear} setMonth={setMonth} years={years}
             auditoria={auditoria}
             reload={() => loadData("reportes", { silent: true })}
+            setError={setError} notify={notify}
+          />
+        )}
+        {!loading && activeView === "inventario" && (
+          <InventarioAdminView
+            reload={() => {}}
             setError={setError} notify={notify}
           />
         )}

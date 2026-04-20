@@ -2526,3 +2526,52 @@ def delete_cuadre_caja(cuadre_id):
         conn.commit()
     finally:
         conn.close()
+
+
+# ── Inventario Diario ──────────────────────────────────────────────────────────
+
+def get_insumos():
+    conn = get_connection()
+    rows = conn.execute('SELECT * FROM insumos WHERE activo=1 ORDER BY categoria, nombre').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_inventario_diario(fecha):
+    conn = get_connection()
+    rows = conn.execute(
+        '''SELECT inv.*, ins.nombre, ins.categoria
+           FROM inventario_diario inv
+           JOIN insumos ins ON inv.insumo_id = ins.id
+           WHERE inv.fecha = ?
+           ORDER BY ins.categoria, ins.nombre''',
+        (fecha,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@serialized_write
+def save_inventario_diario(fecha, items, usuario_id=None):
+    conn = get_connection()
+    try:
+        conn.execute('DELETE FROM inventario_diario WHERE fecha=?', (fecha,))
+        for item in items:
+            insumo_id = item.get('insumo_id')
+            estado = item.get('estado')
+            cantidad = item.get('cantidad')
+            notas = item.get('notas')
+            if not insumo_id or not estado:
+                raise AppValidationError('Cada insumo debe tener insumo_id y estado.')
+            conn.execute(
+                '''INSERT INTO inventario_diario (fecha, insumo_id, estado, cantidad, notas, usuario_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (fecha, insumo_id, estado, cantidad, notas, usuario_id, datetime.now().isoformat())
+            )
+        conn.commit()
+        log_auditoria('inventario_diario', 'SAVE', 0, fecha, f'Inventario del {fecha}', {'items': len(items)})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
