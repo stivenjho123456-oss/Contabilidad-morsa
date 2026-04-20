@@ -7,6 +7,7 @@ export function InventarioMobileView({ session, setError, notify }) {
   const [insumos, setInsumos] = useState([]);
   const [registro, setRegistro] = useState({});
   const [extras, setExtras] = useState([]);
+  const [observaciones, setObservaciones] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [cargando, setCargando] = useState(true);
   const [busqueda, setBusqueda] = useState("");
@@ -78,7 +79,7 @@ export function InventarioMobileView({ session, setError, notify }) {
 
       await request("/api/inventario", {
         method: "POST",
-        body: JSON.stringify({ fecha, items: [...items, ...extrasValidos] }),
+        body: JSON.stringify({ fecha, items: [...items, ...extrasValidos], observaciones: observaciones.trim() || null }),
       });
       notify("Inventario guardado correctamente", "success");
     } catch (err) {
@@ -284,6 +285,21 @@ export function InventarioMobileView({ session, setError, notify }) {
             <button className="inv-extra-del" onClick={() => eliminarExtra(idx)}>✕</button>
           </div>
         ))}
+      </div>
+
+      {/* Observaciones */}
+      <div className="inv-obs-bloque">
+        <div className="inv-obs-header">
+          <span className="inv-obs-titulo">Observaciones del turno</span>
+          <span className="inv-obs-sub">Notas generales, incidentes, recordatorios</span>
+        </div>
+        <textarea
+          className="inv-obs-textarea"
+          placeholder="Ej: La nevera está haciendo ruido, falta limpiar el extractor, llegó pedido incompleto..."
+          value={observaciones}
+          onChange={(e) => setObservaciones(e.target.value)}
+          rows={3}
+        />
       </div>
 
       {/* Botón guardar */}

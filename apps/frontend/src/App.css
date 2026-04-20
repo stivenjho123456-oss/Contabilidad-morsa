@@ -1563,8 +1563,7 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 1px 4px rgba(0,0,0,0.07);
-  margin: 0 12px;
-  margin-bottom: 100px;
+  margin: 0 12px 12px;
 }
 .inv-extras-header {
   display: flex;
@@ -1657,6 +1656,50 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
   transition: color 0.15s, background 0.15s;
 }
 .inv-extra-del:hover { background: #fee2e2; color: #991b1b; }
+
+/* Observaciones */
+.inv-obs-bloque {
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+  margin: 0 12px 100px;
+}
+.inv-obs-header {
+  padding: 12px 14px 10px;
+  background: #fffbeb;
+  border-bottom: 1px solid #fef3c7;
+}
+.inv-obs-titulo {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #92400e;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.inv-obs-sub {
+  display: block;
+  font-size: 11px;
+  color: #b45309;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+.inv-obs-textarea {
+  width: 100%;
+  border: none;
+  outline: none;
+  padding: 12px 14px;
+  font-size: 14px;
+  color: #1e3a5f;
+  background: white;
+  resize: none;
+  box-sizing: border-box;
+  line-height: 1.5;
+  font-family: inherit;
+}
+.inv-obs-textarea::placeholder { color: #bbb; font-style: italic; }
+.inv-obs-textarea:focus { background: #fffef5; }
 
 /* Footer fijo */
 .inv-footer {
