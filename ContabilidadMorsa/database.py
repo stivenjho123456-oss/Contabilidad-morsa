@@ -2540,11 +2540,14 @@ def get_insumos():
 def get_inventario_diario(fecha):
     conn = get_connection()
     rows = conn.execute(
-        '''SELECT inv.*, ins.nombre, ins.categoria
+        '''SELECT inv.*,
+                  COALESCE(ins.nombre, inv.nombre_extra) AS nombre,
+                  COALESCE(ins.categoria, 'Extra') AS categoria
            FROM inventario_diario inv
-           JOIN insumos ins ON inv.insumo_id = ins.id
+           LEFT JOIN insumos ins ON inv.insumo_id = ins.id
            WHERE inv.fecha = ?
-           ORDER BY ins.categoria, ins.nombre''',
+           ORDER BY CASE WHEN ins.categoria IS NULL THEN 1 ELSE 0 END,
+                    ins.categoria, COALESCE(ins.nombre, inv.nombre_extra)''',
         (fecha,)
     ).fetchall()
     conn.close()
@@ -2558,15 +2561,16 @@ def save_inventario_diario(fecha, items, usuario_id=None):
         conn.execute('DELETE FROM inventario_diario WHERE fecha=?', (fecha,))
         for item in items:
             insumo_id = item.get('insumo_id')
+            nombre_extra = (item.get('nombre_extra') or '').strip() or None
             estado = item.get('estado')
             cantidad = item.get('cantidad')
             notas = item.get('notas')
-            if not insumo_id or not estado:
-                raise AppValidationError('Cada insumo debe tener insumo_id y estado.')
+            if not (insumo_id or nombre_extra) or not estado:
+                raise AppValidationError('Cada item debe tener insumo_id o nombre_extra, y estado.')
             conn.execute(
-                '''INSERT INTO inventario_diario (fecha, insumo_id, estado, cantidad, notas, usuario_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (fecha, insumo_id, estado, cantidad, notas, usuario_id, datetime.now().isoformat())
+                '''INSERT INTO inventario_diario (fecha, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (fecha, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, datetime.now().isoformat())
             )
         conn.commit()
         log_auditoria('inventario_diario', 'SAVE', 0, fecha, f'Inventario del {fecha}', {'items': len(items)})

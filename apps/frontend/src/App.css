@@ -1557,6 +1557,104 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
 .inv-notas-input::placeholder { color: #bbb; font-style: italic; }
 .inv-notas-input:focus { border-color: #ea580c; box-shadow: 0 0 0 3px rgba(234,88,12,0.12); }
 
+/* Extras */
+.inv-extras-bloque {
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+  border: 2px dashed #e2e8f0;
+}
+.inv-extras-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #f8faff;
+  border-bottom: 1px solid #e8edf4;
+}
+.inv-extras-titulo {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1e3a5f;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.inv-extras-sub {
+  display: block;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 1px;
+}
+.inv-extras-add-btn {
+  border: 1.5px solid #1e3a5f;
+  border-radius: 8px;
+  background: white;
+  color: #1e3a5f;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.inv-extras-add-btn:hover { background: #eef4ff; }
+
+.inv-extras-empty {
+  padding: 16px 14px;
+  font-size: 13px;
+  color: #aab4be;
+  font-style: italic;
+  text-align: center;
+}
+
+.inv-extra-fila {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #f0f4f9;
+}
+.inv-extra-fila:last-child { border-bottom: none; }
+.inv-extra-inputs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.inv-extra-nombre,
+.inv-extra-notas {
+  width: 100%;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: #1e3a5f;
+  background: white;
+  outline: none;
+  box-sizing: border-box;
+}
+.inv-extra-nombre:focus { border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30,58,95,0.1); }
+.inv-extra-notas { color: #555; }
+.inv-extra-notas::placeholder,
+.inv-extra-nombre::placeholder { color: #bbb; font-style: italic; }
+.inv-extra-del {
+  border: none;
+  background: #fee2e2;
+  color: #991b1b;
+  border-radius: 7px;
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.inv-extra-del:hover { background: #fecaca; }
+
 /* Footer fijo */
 .inv-footer {
   position: fixed;

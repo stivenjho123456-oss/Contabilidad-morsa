@@ -6,6 +6,7 @@ export function InventarioMobileView({ session, setError, notify }) {
   const [fecha, setFecha] = useState(today);
   const [insumos, setInsumos] = useState([]);
   const [registro, setRegistro] = useState({});
+  const [extras, setExtras] = useState([]);
   const [guardando, setGuardando] = useState(false);
   const [cargando, setCargando] = useState(true);
   const [busqueda, setBusqueda] = useState("");
@@ -40,6 +41,18 @@ export function InventarioMobileView({ session, setError, notify }) {
     }
   }
 
+  function agregarExtra() {
+    setExtras((cur) => [...cur, { nombre: "", notas: "" }]);
+  }
+
+  function actualizarExtra(idx, campo, valor) {
+    setExtras((cur) => cur.map((e, i) => i === idx ? { ...e, [campo]: valor } : e));
+  }
+
+  function eliminarExtra(idx) {
+    setExtras((cur) => cur.filter((_, i) => i !== idx));
+  }
+
   async function guardar() {
     try {
       setGuardando(true);
@@ -52,9 +65,20 @@ export function InventarioMobileView({ session, setError, notify }) {
           notas: item.notas || null,
         };
       });
+
+      const extrasValidos = extras
+        .filter((e) => e.nombre.trim())
+        .map((e) => ({
+          insumo_id: null,
+          nombre_extra: e.nombre.trim(),
+          estado: "traer",
+          cantidad: null,
+          notas: e.notas || null,
+        }));
+
       await request("/api/inventario", {
         method: "POST",
-        body: JSON.stringify({ fecha, items }),
+        body: JSON.stringify({ fecha, items: [...items, ...extrasValidos] }),
       });
       notify("Inventario guardado correctamente", "success");
     } catch (err) {
@@ -217,6 +241,47 @@ export function InventarioMobileView({ session, setError, notify }) {
                 );
               })}
             </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Productos extra */}
+      <div className="inv-extras-bloque">
+        <div className="inv-extras-header">
+          <div>
+            <span className="inv-extras-titulo">Productos extra</span>
+            <span className="inv-extras-sub">Items fuera de la lista habitual</span>
+          </div>
+          <button className="inv-extras-add-btn" onClick={agregarExtra}>
+            + Agregar
+          </button>
+        </div>
+
+        {extras.length === 0 && (
+          <div className="inv-extras-empty">
+            Sin productos extra por ahora
+          </div>
+        )}
+
+        {extras.map((extra, idx) => (
+          <div key={idx} className="inv-extra-fila">
+            <div className="inv-extra-inputs">
+              <input
+                type="text"
+                placeholder="Nombre del producto *"
+                value={extra.nombre}
+                onChange={(e) => actualizarExtra(idx, "nombre", e.target.value)}
+                className="inv-extra-nombre"
+              />
+              <input
+                type="text"
+                placeholder="Cantidad o descripción"
+                value={extra.notas}
+                onChange={(e) => actualizarExtra(idx, "notas", e.target.value)}
+                className="inv-extra-notas"
+              />
+            </div>
+            <button className="inv-extra-del" onClick={() => eliminarExtra(idx)}>✕</button>
           </div>
         ))}
       </div>

@@ -1678,7 +1678,8 @@ def export_nomina(periodo: str = Query(...)):
 # ── Inventario Diario ──────────────────────────────────────────────────────────
 
 class InventarioItemPayload(BaseModel):
-    insumo_id: int
+    insumo_id: int | None = None
+    nombre_extra: str | None = None
     estado: str
     cantidad: float | None = None
     notas: str | None = None
