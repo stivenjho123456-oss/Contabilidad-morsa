@@ -76,6 +76,7 @@ from database import (  # noqa: E402
     get_cuadre_caja_by_fecha,
     get_database_health,
     get_dashboard_stats,
+    get_balance_canales,
     get_egresos,
     get_ingresos,
     get_insumos,
@@ -1020,6 +1021,20 @@ def caja_ajustes(
         _cached_runtime_query(
             ("caja_ajustes", mes, ano),
             lambda: get_caja_ajustes(mes=mes, ano=ano),
+        )
+    )
+
+
+@app.get("/api/caja/balance-canales")
+def caja_balance_canales(
+    mes: int = Query(...),
+    ano: int = Query(...),
+):
+    _validate_period(mes, ano)
+    return _api_ok(
+        _cached_runtime_query(
+            ("balance_canales", mes, ano),
+            lambda: get_balance_canales(mes=mes, ano=ano),
         )
     )
 

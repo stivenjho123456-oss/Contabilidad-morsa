@@ -1,3 +1,7 @@
+import {
+  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer,
+} from "recharts";
 import { request, downloadExcelFile } from "../lib/api";
 import { MONTH_NAMES } from "../lib/constants";
 import { money } from "../lib/format";
@@ -5,6 +9,30 @@ import { DataTable, StatCard, TBtn, Toolbar } from "../components/ui";
 
 export function ReportesView({ reporte, auditoria, year, month, setYear, setMonth, years, reload, setError, notify }) {
   const cierre = reporte?.cierre || {};
+
+  // Ingresos por fuente (sumar caja, bancos, tarjeta_cr de todos los registros del mes)
+  const ingresosFuente = (reporte?.ingresos || []).reduce(
+    (acc, row) => ({
+      caja: acc.caja + Number(row.caja || 0),
+      bancos: acc.bancos + Number(row.bancos || 0),
+      tarjeta_cr: acc.tarjeta_cr + Number(row.tarjeta_cr || 0),
+    }),
+    { caja: 0, bancos: 0, tarjeta_cr: 0 }
+  );
+  const pieData = [
+    { name: "Efectivo", value: ingresosFuente.caja, color: "#16a34a" },
+    { name: "Bancos", value: ingresosFuente.bancos, color: "#2563eb" },
+    { name: "Tarjeta CR", value: ingresosFuente.tarjeta_cr, color: "#7c3aed" },
+  ].filter((d) => d.value > 0);
+
+  // Ingresos vs Egresos para bar chart
+  const barData = [
+    { name: "Ingresos", valor: cierre.total_ingresos || 0, fill: "#16a34a" },
+    { name: "Egresos Op.", valor: cierre.egresos_operativos || 0, fill: "#ea580c" },
+    { name: "Nómina", valor: cierre.egresos_nomina || 0, fill: "#dc2626" },
+    { name: "Seg. Social", valor: cierre.egresos_seg_social || 0, fill: "#9f1239" },
+  ];
+
   const tiposResumen = Object.values((reporte?.egresos || []).reduce((acc, row) => {
     const key = row.tipo_gasto || "OTRO";
     if (!acc[key]) acc[key] = { tipo: key, cantidad: 0, total: 0 };
@@ -99,6 +127,55 @@ export function ReportesView({ reporte, auditoria, year, month, setYear, setMont
         <StatCard label="Egresos" value={money(cierre.total_egresos)} tone="red" />
         <StatCard label="Resultado neto" value={money(cierre.resultado_neto)} tone="blue" />
         <StatCard label="Nómina integrada" value={money(cierre.nomina?.total_nomina_integrada)} tone="slate" />
+      </div>
+
+      <div className="rpt-charts-grid">
+        <div className="panel">
+          <h3 className="panel-title">Ingresos vs Egresos</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={barData} margin={{ top: 8, right: 16, left: 16, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+              <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+              <YAxis tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`} tick={{ fontSize: 11 }} width={60} />
+              <Tooltip formatter={(value) => money(value)} />
+              <Bar dataKey="valor" radius={[6, 6, 0, 0]}>
+                {barData.map((entry, i) => (
+                  <Cell key={i} fill={entry.fill} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="panel">
+          <h3 className="panel-title">Ingresos por Fuente</h3>
+          {pieData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={260}>
+              <PieChart>
+                <Pie
+                  data={pieData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={90}
+                  innerRadius={50}
+                  paddingAngle={3}
+                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                  labelLine={false}
+                >
+                  {pieData.map((entry, i) => (
+                    <Cell key={i} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value) => money(value)} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="rpt-no-data">Sin datos de ingresos para este período.</div>
+          )}
+        </div>
       </div>
 
       <div className="split-panels">

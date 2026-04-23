@@ -975,6 +975,43 @@ def get_ingresos(mes=None, ano=None):
     return [dict(r) for r in rows]
 
 
+def get_balance_canales(mes=None, ano=None):
+    conn = get_connection()
+    ing_query = 'SELECT COALESCE(SUM(caja),0) as caja, COALESCE(SUM(bancos),0) as bancos, COALESCE(SUM(tarjeta_cr),0) as tarjeta_cr FROM ingresos WHERE 1=1'
+    ing_params = []
+    if mes:
+        ing_query += " AND strftime('%m', fecha)=?"
+        ing_params.append(f'{int(mes):02d}')
+    if ano:
+        ing_query += " AND strftime('%Y', fecha)=?"
+        ing_params.append(str(ano))
+
+    egr_query = "SELECT canal_pago, COALESCE(SUM(valor),0) as total FROM egresos WHERE 1=1"
+    egr_params = []
+    if mes:
+        egr_query += " AND strftime('%m', fecha)=?"
+        egr_params.append(f'{int(mes):02d}')
+    if ano:
+        egr_query += " AND strftime('%Y', fecha)=?"
+        egr_params.append(str(ano))
+    egr_query += " GROUP BY canal_pago"
+
+    ing_row = conn.execute(ing_query, ing_params).fetchone()
+    egr_rows = conn.execute(egr_query, egr_params).fetchall()
+    conn.close()
+
+    egr_by_canal = {r['canal_pago']: float(r['total']) for r in egr_rows}
+    ing_caja = float(ing_row['caja']) if ing_row else 0
+    ing_bancos = float(ing_row['bancos']) if ing_row else 0
+    ing_tarjeta = float(ing_row['tarjeta_cr']) if ing_row else 0
+
+    return {
+        'efectivo': {'ingresos': ing_caja, 'egresos': egr_by_canal.get('Caja', 0), 'balance': ing_caja - egr_by_canal.get('Caja', 0)},
+        'bancos': {'ingresos': ing_bancos, 'egresos': egr_by_canal.get('Bancos', 0), 'balance': ing_bancos - egr_by_canal.get('Bancos', 0)},
+        'tarjeta_cr': {'ingresos': ing_tarjeta, 'egresos': egr_by_canal.get('Tarjeta CR', 0), 'balance': ing_tarjeta - egr_by_canal.get('Tarjeta CR', 0)},
+    }
+
+
 @serialized_write
 def save_ingreso(data, ingreso_id=None):
     fecha = _validate_iso_date(data.get('fecha'))

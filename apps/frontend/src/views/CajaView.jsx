@@ -13,6 +13,7 @@ export function CajaView({ reload, setError, notify }) {
   const [hoy,   setHoy]   = useState(null);
   const [lista, setLista] = useState([]);
   const [ajustes, setAjustes] = useState([]);
+  const [balance, setBalance] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [showAjusteForm, setShowAjusteForm] = useState(false);
@@ -23,14 +24,16 @@ export function CajaView({ reload, setError, notify }) {
   const loadCaja = useCallback(async () => {
     setLoading(true);
     try {
-      const [hoyRes, listaRes, ajustesRes] = await Promise.allSettled([
+      const [hoyRes, listaRes, ajustesRes, balanceRes] = await Promise.allSettled([
         request("/api/caja/hoy"),
         request(`/api/caja?mes=${month}&ano=${year}`),
         request(`/api/caja/ajustes?mes=${month}&ano=${year}`),
+        request(`/api/caja/balance-canales?mes=${month}&ano=${year}`),
       ]);
       if (hoyRes.status === "fulfilled") setHoy(hoyRes.value);
       if (listaRes.status === "fulfilled") setLista(listaRes.value);
       if (ajustesRes.status === "fulfilled") setAjustes(ajustesRes.value);
+      if (balanceRes.status === "fulfilled") setBalance(balanceRes.value);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -187,6 +190,39 @@ export function CajaView({ reload, setError, notify }) {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {balance && (
+        <div className="caja-balance-panel">
+          <div className="caja-balance-title">Saldo estimado por canal — {MONTH_NAMES[month - 1]} {year}</div>
+          <div className="caja-balance-grid">
+            <div className={`caja-balance-card${balance.efectivo.balance < 0 ? " negative" : ""}`}>
+              <div className="caja-balance-label">Efectivo (Caja)</div>
+              <div className="caja-balance-amount">{money(balance.efectivo.balance)}</div>
+              <div className="caja-balance-detail">
+                <span>Entró: {money(balance.efectivo.ingresos)}</span>
+                <span>Salió: {money(balance.efectivo.egresos)}</span>
+              </div>
+            </div>
+            <div className={`caja-balance-card${balance.bancos.balance < 0 ? " negative" : ""}`}>
+              <div className="caja-balance-label">Bancos</div>
+              <div className="caja-balance-amount">{money(balance.bancos.balance)}</div>
+              <div className="caja-balance-detail">
+                <span>Entró: {money(balance.bancos.ingresos)}</span>
+                <span>Salió: {money(balance.bancos.egresos)}</span>
+              </div>
+            </div>
+            <div className={`caja-balance-card${balance.tarjeta_cr.balance < 0 ? " negative" : ""}`}>
+              <div className="caja-balance-label">Tarjeta CR</div>
+              <div className="caja-balance-amount">{money(balance.tarjeta_cr.balance)}</div>
+              <div className="caja-balance-detail">
+                <span>Entró: {money(balance.tarjeta_cr.ingresos)}</span>
+                <span>Salió: {money(balance.tarjeta_cr.egresos)}</span>
+              </div>
+            </div>
+          </div>
+          <p className="caja-balance-note">Muestra cuánto debería haber en cada canal según los ingresos y egresos registrados en el período.</p>
         </div>
       )}
 
