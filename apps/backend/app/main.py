@@ -405,6 +405,10 @@ def _public_request_path(path: str):
     )
 
 
+def _cocina_allowed_path(path: str):
+    return path.startswith("/api/inventario") or path.startswith("/api/insumos") or path.startswith("/api/auth/")
+
+
 def _parse_bearer_token(header_value: str | None):
     raw = (header_value or "").strip()
     if not raw:
@@ -644,6 +648,11 @@ async def auth_and_security_middleware(request: Request, call_next):
             )
         request.state.current_user = session["user"]
         request.state.auth_session = session
+        if session["user"].get("role") == "cocina" and not _cocina_allowed_path(path):
+            return _apply_security_headers(
+                JSONResponse(status_code=403, content={"ok": False, "detail": "Acceso no autorizado."}),
+                is_api=True,
+            )
     response = await call_next(request)
     if mutating_api and response.status_code < 400:
         _invalidate_runtime_caches()
