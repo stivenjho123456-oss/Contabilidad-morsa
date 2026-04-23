@@ -121,12 +121,16 @@ LOG_DIR = get_log_dir()
 LOG_FILE = LOG_DIR / "backend.log"
 ENABLE_DOCS = os.getenv("MORSA_ENABLE_DOCS") == "1"
 DEFAULT_ALLOWED_ORIGINS = [
-    "http://127.0.0.1:5175",
-    "http://localhost:5175",
-    "http://127.0.0.1:8010",
-    "http://localhost:8010",
     "https://contabilidad-morsa.vercel.app",
 ]
+# Orígenes locales solo en desarrollo explícito
+if os.getenv("MORSA_DEV_MODE") == "1":
+    DEFAULT_ALLOWED_ORIGINS += [
+        "http://127.0.0.1:5175",
+        "http://localhost:5175",
+        "http://127.0.0.1:8010",
+        "http://localhost:8010",
+    ]
 ALLOWED_SUPPORT_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 ALLOWED_SUPPORT_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg", "image/webp"}
 ALLOWED_IMPORT_EXTENSIONS = {".xlsx", ".xlsm"}
@@ -137,6 +141,14 @@ SYSTEM_SUMMARY_CACHE_SECONDS = 20
 RUNTIME_STATUS_CACHE_SECONDS = 30
 RUNTIME_QUERY_CACHE_SECONDS = 20
 _RUNTIME_CACHE_LOCK = threading.RLock()
+
+# ── Rate limiting para login (fuerza bruta) ───────────────────────────────────
+_LOGIN_MAX_ATTEMPTS = 5        # intentos fallidos antes de bloquear
+_LOGIN_WINDOW_SECONDS = 900    # ventana de 15 minutos
+_LOGIN_LOCKOUT_SECONDS = 900   # bloqueo de 15 minutos
+_login_attempts: dict[str, list[float]] = {}  # ip → [timestamps]
+_login_lockouts: dict[str, float] = {}         # ip → unlock_timestamp
+_login_rate_lock = threading.Lock()
 LOG_HANDLERS = [logging.StreamHandler()]
 try:
     LOG_HANDLERS.insert(0, logging.FileHandler(LOG_FILE, encoding="utf-8"))
@@ -710,16 +722,53 @@ def auth_bootstrap(payload: AuthBootstrapPayload, request: Request):
         _handle_validation(exc)
 
 
+def _check_login_rate(ip: str):
+    now = time.time()
+    with _login_rate_lock:
+        unlock_at = _login_lockouts.get(ip, 0)
+        if unlock_at > now:
+            remaining = int(unlock_at - now)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Demasiados intentos fallidos. Intenta de nuevo en {remaining // 60 + 1} minutos.",
+            )
+        attempts = [t for t in _login_attempts.get(ip, []) if now - t < _LOGIN_WINDOW_SECONDS]
+        _login_attempts[ip] = attempts
+
+
+def _record_login_failure(ip: str):
+    now = time.time()
+    with _login_rate_lock:
+        attempts = _login_attempts.setdefault(ip, [])
+        attempts.append(now)
+        recent = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+        _login_attempts[ip] = recent
+        if len(recent) >= _LOGIN_MAX_ATTEMPTS:
+            _login_lockouts[ip] = now + _LOGIN_LOCKOUT_SECONDS
+            _login_attempts[ip] = []
+            logger.warning("Login bloqueado por fuerza bruta — IP: %s", ip)
+
+
+def _clear_login_failures(ip: str):
+    with _login_rate_lock:
+        _login_attempts.pop(ip, None)
+        _login_lockouts.pop(ip, None)
+
+
 @app.post("/api/auth/login")
 def auth_login(payload: AuthLoginPayload, request: Request):
+    ip = _client_ip(request)
+    _check_login_rate(ip)
     session = authenticate_user(
         payload.username,
         payload.password,
         user_agent=request.headers.get("user-agent", ""),
-        ip_address=_client_ip(request),
+        ip_address=ip,
     )
     if not session:
+        _record_login_failure(ip)
         raise HTTPException(status_code=401, detail="Credenciales inválidas.")
+    _clear_login_failures(ip)
     return _api_ok(session, message="Sesión iniciada.")
 
 
