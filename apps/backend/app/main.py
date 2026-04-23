@@ -77,6 +77,7 @@ from database import (  # noqa: E402
     get_database_health,
     get_dashboard_stats,
     get_balance_canales,
+    get_caja_apertura,
     get_egresos,
     get_ingresos,
     get_insumos,
@@ -94,6 +95,7 @@ from database import (  # noqa: E402
     log_auditoria,
     month_year_from_date,
     period_from_month_year,
+    save_caja_apertura,
     save_cuadre_caja,
     save_inventario_diario,
     save_nomina_asistencia,
@@ -223,6 +225,15 @@ class CajaAjustePayload(BaseModel):
     canal: str = "Caja"
     valor: float = Field(gt=0)
     motivo: str
+    observaciones: str = ""
+
+
+class CajaAperturaPayload(BaseModel):
+    mes: int
+    ano: int
+    efectivo: float = 0
+    bancos: float = 0
+    tarjeta_cr: float = 0
     observaciones: str = ""
 
 
@@ -1024,6 +1035,26 @@ def caja_ajustes(
             lambda: get_caja_ajustes(mes=mes, ano=ano),
         )
     )
+
+
+@app.get("/api/caja/apertura")
+def caja_apertura_get(mes: int = Query(...), ano: int = Query(...)):
+    _validate_period(mes, ano)
+    return _api_ok(get_caja_apertura(mes, ano))
+
+
+@app.post("/api/caja/apertura")
+def caja_apertura_post(payload: CajaAperturaPayload):
+    _validate_period(payload.mes, payload.ano)
+    try:
+        save_caja_apertura(
+            payload.mes, payload.ano,
+            payload.efectivo, payload.bancos, payload.tarjeta_cr,
+            payload.observaciones,
+        )
+        return _api_ok(message="Saldos iniciales guardados correctamente.")
+    except Exception as exc:
+        _handle_validation(exc)
 
 
 @app.get("/api/caja/balance-canales")

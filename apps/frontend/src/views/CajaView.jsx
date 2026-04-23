@@ -14,6 +14,8 @@ export function CajaView({ reload, setError, notify }) {
   const [lista, setLista] = useState([]);
   const [ajustes, setAjustes] = useState([]);
   const [balance, setBalance] = useState(null);
+  const [aperturaCanales, setAperturaCanales] = useState(null);
+  const [showAperturaForm, setShowAperturaForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [showAjusteForm, setShowAjusteForm] = useState(false);
@@ -24,16 +26,18 @@ export function CajaView({ reload, setError, notify }) {
   const loadCaja = useCallback(async () => {
     setLoading(true);
     try {
-      const [hoyRes, listaRes, ajustesRes, balanceRes] = await Promise.allSettled([
+      const [hoyRes, listaRes, ajustesRes, balanceRes, aperturaRes] = await Promise.allSettled([
         request("/api/caja/hoy"),
         request(`/api/caja?mes=${month}&ano=${year}`),
         request(`/api/caja/ajustes?mes=${month}&ano=${year}`),
         request(`/api/caja/balance-canales?mes=${month}&ano=${year}`),
+        request(`/api/caja/apertura?mes=${month}&ano=${year}`),
       ]);
       if (hoyRes.status === "fulfilled") setHoy(hoyRes.value);
       if (listaRes.status === "fulfilled") setLista(listaRes.value);
       if (ajustesRes.status === "fulfilled") setAjustes(ajustesRes.value);
       if (balanceRes.status === "fulfilled") setBalance(balanceRes.value);
+      if (aperturaRes.status === "fulfilled") setAperturaCanales(aperturaRes.value);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -79,6 +83,9 @@ export function CajaView({ reload, setError, notify }) {
           <p className="caja-sub">La caja queda abierta y el saldo se arrastra automáticamente con cada entrada y salida en efectivo.</p>
         </div>
         <div className="caja-header-actions">
+          <button className="caja-btn-secondary" onClick={() => setShowAperturaForm(true)}>
+            {aperturaCanales?.efectivo || aperturaCanales?.bancos || aperturaCanales?.tarjeta_cr ? "Editar Apertura" : "Arrancar Caja"}
+          </button>
           <button className="caja-btn-secondary" onClick={() => setShowAjusteForm(true)}>
             + Ajuste Manual
           </button>
@@ -201,6 +208,7 @@ export function CajaView({ reload, setError, notify }) {
               <div className="caja-balance-label">Efectivo (Caja)</div>
               <div className="caja-balance-amount">{money(balance.efectivo.balance)}</div>
               <div className="caja-balance-detail">
+                {balance.efectivo.apertura > 0 && <span>Inicial: {money(balance.efectivo.apertura)}</span>}
                 <span>Entró: {money(balance.efectivo.ingresos)}</span>
                 <span>Salió: {money(balance.efectivo.egresos)}</span>
                 {balance.efectivo.ajustes !== 0 && <span>Ajustes: {balance.efectivo.ajustes > 0 ? "+" : ""}{money(balance.efectivo.ajustes)}</span>}
@@ -210,6 +218,7 @@ export function CajaView({ reload, setError, notify }) {
               <div className="caja-balance-label">Bancos</div>
               <div className="caja-balance-amount">{money(balance.bancos.balance)}</div>
               <div className="caja-balance-detail">
+                {balance.bancos.apertura > 0 && <span>Inicial: {money(balance.bancos.apertura)}</span>}
                 <span>Entró: {money(balance.bancos.ingresos)}</span>
                 <span>Salió: {money(balance.bancos.egresos)}</span>
                 {balance.bancos.ajustes !== 0 && <span>Ajustes: {balance.bancos.ajustes > 0 ? "+" : ""}{money(balance.bancos.ajustes)}</span>}
@@ -219,6 +228,7 @@ export function CajaView({ reload, setError, notify }) {
               <div className="caja-balance-label">Tarjeta CR</div>
               <div className="caja-balance-amount">{money(balance.tarjeta_cr.balance)}</div>
               <div className="caja-balance-detail">
+                {balance.tarjeta_cr.apertura > 0 && <span>Inicial: {money(balance.tarjeta_cr.apertura)}</span>}
                 <span>Entró: {money(balance.tarjeta_cr.ingresos)}</span>
                 <span>Salió: {money(balance.tarjeta_cr.egresos)}</span>
                 {balance.tarjeta_cr.ajustes !== 0 && <span>Ajustes: {balance.tarjeta_cr.ajustes > 0 ? "+" : ""}{money(balance.tarjeta_cr.ajustes)}</span>}
@@ -345,6 +355,16 @@ export function CajaView({ reload, setError, notify }) {
         <CajaAjusteModal
           onClose={() => setShowAjusteForm(false)}
           onSaved={() => { setShowAjusteForm(false); loadCaja(); reload(); notify("Ajuste manual registrado.", "success"); }}
+          setError={setError}
+        />
+      )}
+      {showAperturaForm && (
+        <CajaAperturaModal
+          mes={month}
+          ano={year}
+          current={aperturaCanales}
+          onClose={() => setShowAperturaForm(false)}
+          onSaved={() => { setShowAperturaForm(false); loadCaja(); notify("Saldos iniciales guardados.", "success"); }}
           setError={setError}
         />
       )}
@@ -512,6 +532,97 @@ function CajaAjusteModal({ onClose, onSaved, setError }) {
           <button className="btn-cancel" onClick={onClose}>Cancelar</button>
           <button className="btn-save" onClick={handleSave} disabled={saving}>
             {saving ? "Registrando..." : "Registrar Ajuste"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CajaAperturaModal({ mes, ano, current, onClose, onSaved, setError }) {
+  const [efectivo, setEfectivo] = useState(current?.efectivo ?? "");
+  const [bancos, setBancos] = useState(current?.bancos ?? "");
+  const [tarjeta, setTarjeta] = useState(current?.tarjeta_cr ?? "");
+  const [obs, setObs] = useState(current?.observaciones ?? "");
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await request("/api/caja/apertura", {
+        method: "POST",
+        body: JSON.stringify({
+          mes,
+          ano,
+          efectivo: Number(efectivo || 0),
+          bancos: Number(bancos || 0),
+          tarjeta_cr: Number(tarjeta || 0),
+          observaciones: obs,
+        }),
+      });
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const total = Number(efectivo || 0) + Number(bancos || 0) + Number(tarjeta || 0);
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="caja-modal">
+        <div className="caja-modal-header">
+          <h3>Arrancar Caja — {mes}/{ano}</h3>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="caja-modal-body">
+          <p className="caja-apertura-desc">
+            Ingresa el dinero disponible al inicio del período en cada canal. Estos valores son el punto de partida para calcular el saldo actual.
+          </p>
+          <div className="caja-apertura-grid">
+            <div className="caja-apertura-canal">
+              <label className="caja-apertura-label">Efectivo (Caja)</label>
+              <input
+                type="number" min="0" value={efectivo}
+                onChange={(e) => setEfectivo(e.target.value)}
+                className="caja-input caja-apertura-input"
+                placeholder="0"
+              />
+            </div>
+            <div className="caja-apertura-canal">
+              <label className="caja-apertura-label">Bancos</label>
+              <input
+                type="number" min="0" value={bancos}
+                onChange={(e) => setBancos(e.target.value)}
+                className="caja-input caja-apertura-input"
+                placeholder="0"
+              />
+            </div>
+            <div className="caja-apertura-canal">
+              <label className="caja-apertura-label">Tarjeta CR</label>
+              <input
+                type="number" min="0" value={tarjeta}
+                onChange={(e) => setTarjeta(e.target.value)}
+                className="caja-input caja-apertura-input"
+                placeholder="0"
+              />
+            </div>
+          </div>
+          <div className="caja-apertura-total">
+            Total arranque: <strong>{money(total)}</strong>
+          </div>
+          <div className="caja-field">
+            <label>Observaciones</label>
+            <input type="text" value={obs} onChange={(e) => setObs(e.target.value)}
+                   className="caja-input" placeholder="Ej. saldo al cierre del mes anterior" />
+          </div>
+        </div>
+        <div className="caja-modal-footer">
+          <button className="btn-cancel" onClick={onClose}>Cancelar</button>
+          <button className="btn-save" onClick={handleSave} disabled={saving}>
+            {saving ? "Guardando..." : "Guardar Saldos Iniciales"}
           </button>
         </div>
       </div>

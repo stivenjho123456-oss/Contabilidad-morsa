@@ -937,6 +937,26 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
 }
 .caja-btn-del:hover { background: #fecaca; }
 
+/* Arrancar Caja modal */
+.caja-apertura-desc {
+  font-size: 13px; color: #64748b; margin-bottom: 18px; line-height: 1.5;
+}
+.caja-apertura-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;
+}
+.caja-apertura-canal { display: flex; flex-direction: column; gap: 6px; }
+.caja-apertura-label {
+  font-size: 12px; font-weight: 700; color: #1e3a5f; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.caja-apertura-input { font-size: 16px; font-weight: 600; text-align: right; }
+.caja-apertura-total {
+  background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;
+  padding: 10px 14px; font-size: 14px; color: #0369a1; margin-bottom: 14px; text-align: center;
+}
+@media (max-width: 500px) {
+  .caja-apertura-grid { grid-template-columns: 1fr; }
+}
+
 /* Balance por canal */
 .caja-balance-panel {
   background: white; border-radius: 14px; padding: 20px 24px;

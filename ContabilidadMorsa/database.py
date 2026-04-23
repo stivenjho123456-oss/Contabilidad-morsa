@@ -316,6 +316,18 @@ def init_db():
                 created_at     TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS caja_apertura (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                mes            INTEGER NOT NULL,
+                ano            INTEGER NOT NULL,
+                efectivo       REAL NOT NULL DEFAULT 0,
+                bancos         REAL NOT NULL DEFAULT 0,
+                tarjeta_cr     REAL NOT NULL DEFAULT 0,
+                observaciones  TEXT,
+                created_at     TEXT NOT NULL,
+                UNIQUE(mes, ano)
+            );
+
             CREATE TABLE IF NOT EXISTS usuarios (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 username       TEXT NOT NULL UNIQUE,
@@ -976,6 +988,44 @@ def get_ingresos(mes=None, ano=None):
     return [dict(r) for r in rows]
 
 
+def get_caja_apertura(mes, ano):
+    conn = get_connection()
+    row = conn.execute(
+        'SELECT * FROM caja_apertura WHERE mes=? AND ano=?', (int(mes), int(ano))
+    ).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return {'mes': mes, 'ano': ano, 'efectivo': 0, 'bancos': 0, 'tarjeta_cr': 0, 'observaciones': ''}
+
+
+@serialized_write
+def save_caja_apertura(mes, ano, efectivo, bancos, tarjeta_cr, observaciones=''):
+    mes, ano = int(mes), int(ano)
+    ensure_period_open(mes, ano)
+    now = datetime.now().isoformat(timespec='seconds')
+    conn = get_connection()
+    try:
+        conn.execute(
+            '''
+            INSERT INTO caja_apertura (mes, ano, efectivo, bancos, tarjeta_cr, observaciones, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(mes, ano) DO UPDATE SET
+                efectivo=EXCLUDED.efectivo,
+                bancos=EXCLUDED.bancos,
+                tarjeta_cr=EXCLUDED.tarjeta_cr,
+                observaciones=EXCLUDED.observaciones
+            ''',
+            (mes, ano, float(efectivo or 0), float(bancos or 0), float(tarjeta_cr or 0), observaciones or '', now),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_balance_canales(mes=None, ano=None):
     conn = get_connection()
     period_params = []
@@ -1004,33 +1054,44 @@ def get_balance_canales(mes=None, ano=None):
     ).fetchall()
     conn.close()
 
+    # Saldo inicial registrado al arrancar caja
+    apertura_row = conn.execute(
+        'SELECT efectivo, bancos, tarjeta_cr FROM caja_apertura WHERE mes=? AND ano=?',
+        (int(mes or 0), int(ano or 0)),
+    ).fetchone() if (mes and ano) else None
+    conn.close()
+
     egr_by_canal = {r['canal_pago']: float(r['total']) for r in egr_rows}
     ing_caja = float(ing_row['caja']) if ing_row else 0
     ing_bancos = float(ing_row['bancos']) if ing_row else 0
     ing_tarjeta = float(ing_row['tarjeta_cr']) if ing_row else 0
 
-    # Calcular efecto neto de ajustes por canal
+    ap_caja = float(apertura_row['efectivo']) if apertura_row else 0
+    ap_bancos = float(apertura_row['bancos']) if apertura_row else 0
+    ap_tarjeta = float(apertura_row['tarjeta_cr']) if apertura_row else 0
+
     adj_net: dict[str, float] = {}
     for r in adj_rows:
         canal = r['canal'] or 'Caja'
         delta = float(r['total']) if (r['tipo'] or '').upper() == 'ENTRADA' else -float(r['total'])
         adj_net[canal] = adj_net.get(canal, 0) + delta
 
-    def _balance(ing, egr_key, adj_key):
-        return round(ing - egr_by_canal.get(egr_key, 0) + adj_net.get(adj_key, 0), 2)
+    def _balance(ap, ing, egr_key, adj_key):
+        return round(ap + ing - egr_by_canal.get(egr_key, 0) + adj_net.get(adj_key, 0), 2)
 
     return {
+        'apertura': {'efectivo': ap_caja, 'bancos': ap_bancos, 'tarjeta_cr': ap_tarjeta},
         'efectivo': {
-            'ingresos': ing_caja, 'egresos': egr_by_canal.get('Caja', 0),
-            'ajustes': adj_net.get('Caja', 0), 'balance': _balance(ing_caja, 'Caja', 'Caja'),
+            'apertura': ap_caja, 'ingresos': ing_caja, 'egresos': egr_by_canal.get('Caja', 0),
+            'ajustes': adj_net.get('Caja', 0), 'balance': _balance(ap_caja, ing_caja, 'Caja', 'Caja'),
         },
         'bancos': {
-            'ingresos': ing_bancos, 'egresos': egr_by_canal.get('Bancos', 0),
-            'ajustes': adj_net.get('Bancos', 0), 'balance': _balance(ing_bancos, 'Bancos', 'Bancos'),
+            'apertura': ap_bancos, 'ingresos': ing_bancos, 'egresos': egr_by_canal.get('Bancos', 0),
+            'ajustes': adj_net.get('Bancos', 0), 'balance': _balance(ap_bancos, ing_bancos, 'Bancos', 'Bancos'),
         },
         'tarjeta_cr': {
-            'ingresos': ing_tarjeta, 'egresos': egr_by_canal.get('Tarjeta CR', 0),
-            'ajustes': adj_net.get('Tarjeta CR', 0), 'balance': _balance(ing_tarjeta, 'Tarjeta CR', 'Tarjeta CR'),
+            'apertura': ap_tarjeta, 'ingresos': ing_tarjeta, 'egresos': egr_by_canal.get('Tarjeta CR', 0),
+            'ajustes': adj_net.get('Tarjeta CR', 0), 'balance': _balance(ap_tarjeta, ing_tarjeta, 'Tarjeta CR', 'Tarjeta CR'),
         },
     }
 
