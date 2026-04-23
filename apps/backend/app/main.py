@@ -220,6 +220,7 @@ class CuadreCajaPayload(BaseModel):
 class CajaAjustePayload(BaseModel):
     fecha: str
     tipo: str
+    canal: str = "Caja"
     valor: float = Field(gt=0)
     motivo: str
     observaciones: str = ""

@@ -362,6 +362,7 @@ def init_db():
         _ensure_column(conn, 'egresos', 'soporte_name', 'TEXT')
         _ensure_column(conn, 'egresos', 'support_file_id', 'INTEGER')
         _ensure_column(conn, 'egresos', 'canal_pago', "TEXT DEFAULT 'Otro'")
+        _ensure_column(conn, 'caja_ajustes', 'canal', "TEXT DEFAULT 'Caja'")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -977,27 +978,30 @@ def get_ingresos(mes=None, ano=None):
 
 def get_balance_canales(mes=None, ano=None):
     conn = get_connection()
-    ing_query = 'SELECT COALESCE(SUM(caja),0) as caja, COALESCE(SUM(bancos),0) as bancos, COALESCE(SUM(tarjeta_cr),0) as tarjeta_cr FROM ingresos WHERE 1=1'
-    ing_params = []
+    period_params = []
+    period_filter = ' WHERE 1=1'
     if mes:
-        ing_query += " AND strftime('%m', fecha)=?"
-        ing_params.append(f'{int(mes):02d}')
+        period_filter += " AND strftime('%m', fecha)=?"
+        period_params.append(f'{int(mes):02d}')
     if ano:
-        ing_query += " AND strftime('%Y', fecha)=?"
-        ing_params.append(str(ano))
+        period_filter += " AND strftime('%Y', fecha)=?"
+        period_params.append(str(ano))
 
-    egr_query = "SELECT canal_pago, COALESCE(SUM(valor),0) as total FROM egresos WHERE 1=1"
-    egr_params = []
-    if mes:
-        egr_query += " AND strftime('%m', fecha)=?"
-        egr_params.append(f'{int(mes):02d}')
-    if ano:
-        egr_query += " AND strftime('%Y', fecha)=?"
-        egr_params.append(str(ano))
-    egr_query += " GROUP BY canal_pago"
+    ing_row = conn.execute(
+        f'SELECT COALESCE(SUM(caja),0) as caja, COALESCE(SUM(bancos),0) as bancos, COALESCE(SUM(tarjeta_cr),0) as tarjeta_cr FROM ingresos{period_filter}',
+        period_params,
+    ).fetchone()
 
-    ing_row = conn.execute(ing_query, ing_params).fetchone()
-    egr_rows = conn.execute(egr_query, egr_params).fetchall()
+    egr_rows = conn.execute(
+        f'SELECT canal_pago, COALESCE(SUM(valor),0) as total FROM egresos{period_filter} GROUP BY canal_pago',
+        period_params,
+    ).fetchall()
+
+    # Ajustes manuales por canal (ENTRADA suma, SALIDA resta)
+    adj_rows = conn.execute(
+        f'SELECT canal, tipo, COALESCE(SUM(valor),0) as total FROM caja_ajustes{period_filter} GROUP BY canal, tipo',
+        period_params,
+    ).fetchall()
     conn.close()
 
     egr_by_canal = {r['canal_pago']: float(r['total']) for r in egr_rows}
@@ -1005,10 +1009,29 @@ def get_balance_canales(mes=None, ano=None):
     ing_bancos = float(ing_row['bancos']) if ing_row else 0
     ing_tarjeta = float(ing_row['tarjeta_cr']) if ing_row else 0
 
+    # Calcular efecto neto de ajustes por canal
+    adj_net: dict[str, float] = {}
+    for r in adj_rows:
+        canal = r['canal'] or 'Caja'
+        delta = float(r['total']) if (r['tipo'] or '').upper() == 'ENTRADA' else -float(r['total'])
+        adj_net[canal] = adj_net.get(canal, 0) + delta
+
+    def _balance(ing, egr_key, adj_key):
+        return round(ing - egr_by_canal.get(egr_key, 0) + adj_net.get(adj_key, 0), 2)
+
     return {
-        'efectivo': {'ingresos': ing_caja, 'egresos': egr_by_canal.get('Caja', 0), 'balance': ing_caja - egr_by_canal.get('Caja', 0)},
-        'bancos': {'ingresos': ing_bancos, 'egresos': egr_by_canal.get('Bancos', 0), 'balance': ing_bancos - egr_by_canal.get('Bancos', 0)},
-        'tarjeta_cr': {'ingresos': ing_tarjeta, 'egresos': egr_by_canal.get('Tarjeta CR', 0), 'balance': ing_tarjeta - egr_by_canal.get('Tarjeta CR', 0)},
+        'efectivo': {
+            'ingresos': ing_caja, 'egresos': egr_by_canal.get('Caja', 0),
+            'ajustes': adj_net.get('Caja', 0), 'balance': _balance(ing_caja, 'Caja', 'Caja'),
+        },
+        'bancos': {
+            'ingresos': ing_bancos, 'egresos': egr_by_canal.get('Bancos', 0),
+            'ajustes': adj_net.get('Bancos', 0), 'balance': _balance(ing_bancos, 'Bancos', 'Bancos'),
+        },
+        'tarjeta_cr': {
+            'ingresos': ing_tarjeta, 'egresos': egr_by_canal.get('Tarjeta CR', 0),
+            'ajustes': adj_net.get('Tarjeta CR', 0), 'balance': _balance(ing_tarjeta, 'Tarjeta CR', 'Tarjeta CR'),
+        },
     }
 
 
@@ -2512,6 +2535,7 @@ def create_caja_ajuste(data):
     tipo = _clean_text(data.get('tipo')).upper()
     motivo = _clean_text(data.get('motivo'))
     observaciones = _clean_text(data.get('observaciones'))
+    canal = _clean_text(data.get('canal') or 'Caja')
     try:
         valor = float(data.get('valor') or 0)
     except (TypeError, ValueError) as exc:
@@ -2519,6 +2543,8 @@ def create_caja_ajuste(data):
 
     if tipo not in {'ENTRADA', 'SALIDA'}:
         raise AppValidationError('El ajuste manual debe ser de tipo ENTRADA o SALIDA.')
+    if canal not in {'Caja', 'Bancos', 'Tarjeta CR'}:
+        raise AppValidationError('El canal debe ser Caja, Bancos o Tarjeta CR.')
     if valor <= 0:
         raise AppValidationError('El valor del ajuste debe ser mayor a cero.')
     if not motivo:
@@ -2529,10 +2555,10 @@ def create_caja_ajuste(data):
     try:
         cursor = conn.execute(
             '''
-            INSERT INTO caja_ajustes (fecha, tipo, valor, motivo, observaciones, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO caja_ajustes (fecha, tipo, canal, valor, motivo, observaciones, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ''',
-            (fecha, tipo, valor, motivo, observaciones, now),
+            (fecha, tipo, canal, valor, motivo, observaciones, now),
         )
         ajuste_id = _extract_inserted_id(cursor)
         conn.commit()
@@ -2545,6 +2571,7 @@ def create_caja_ajuste(data):
     log_auditoria('caja_ajuste', 'CREATE', ajuste_id, period_from_month_year(mes, ano), motivo, {
         'fecha': fecha,
         'tipo': tipo,
+        'canal': canal,
         'valor': valor,
         'observaciones': observaciones,
         'created_at': now,

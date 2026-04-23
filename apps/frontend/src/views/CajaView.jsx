@@ -203,6 +203,7 @@ export function CajaView({ reload, setError, notify }) {
               <div className="caja-balance-detail">
                 <span>Entró: {money(balance.efectivo.ingresos)}</span>
                 <span>Salió: {money(balance.efectivo.egresos)}</span>
+                {balance.efectivo.ajustes !== 0 && <span>Ajustes: {balance.efectivo.ajustes > 0 ? "+" : ""}{money(balance.efectivo.ajustes)}</span>}
               </div>
             </div>
             <div className={`caja-balance-card${balance.bancos.balance < 0 ? " negative" : ""}`}>
@@ -211,6 +212,7 @@ export function CajaView({ reload, setError, notify }) {
               <div className="caja-balance-detail">
                 <span>Entró: {money(balance.bancos.ingresos)}</span>
                 <span>Salió: {money(balance.bancos.egresos)}</span>
+                {balance.bancos.ajustes !== 0 && <span>Ajustes: {balance.bancos.ajustes > 0 ? "+" : ""}{money(balance.bancos.ajustes)}</span>}
               </div>
             </div>
             <div className={`caja-balance-card${balance.tarjeta_cr.balance < 0 ? " negative" : ""}`}>
@@ -219,6 +221,7 @@ export function CajaView({ reload, setError, notify }) {
               <div className="caja-balance-detail">
                 <span>Entró: {money(balance.tarjeta_cr.ingresos)}</span>
                 <span>Salió: {money(balance.tarjeta_cr.egresos)}</span>
+                {balance.tarjeta_cr.ajustes !== 0 && <span>Ajustes: {balance.tarjeta_cr.ajustes > 0 ? "+" : ""}{money(balance.tarjeta_cr.ajustes)}</span>}
               </div>
             </div>
           </div>
@@ -298,6 +301,7 @@ export function CajaView({ reload, setError, notify }) {
           columns={[
             { key: "fecha", label: "Fecha" },
             { key: "tipo", label: "Tipo", render: (value) => value === "ENTRADA" ? "Entrada" : "Salida" },
+            { key: "canal", label: "Canal", render: (value) => value || "Caja" },
             { key: "valor", label: "Valor", render: (value, row) => `${row.tipo === "ENTRADA" ? "+" : "-"}${money(value)}` },
             { key: "motivo", label: "Motivo" },
             { key: "observaciones", label: "Observaciones", render: (value) => value || "—" },
@@ -441,7 +445,7 @@ function CajaFormModal({ data, todayMovs, saldoSugerido, onClose, onSaved, setEr
 
 function CajaAjusteModal({ onClose, onSaved, setError }) {
   const today = new Date().toISOString().slice(0, 10);
-  const [form, setForm] = useState({ fecha: today, tipo: "SALIDA", valor: "", motivo: "", observaciones: "" });
+  const [form, setForm] = useState({ fecha: today, tipo: "SALIDA", canal: "Caja", valor: "", motivo: "", observaciones: "" });
   const [saving, setSaving] = useState(false);
   const set = (key) => (e) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
 
@@ -479,8 +483,16 @@ function CajaAjusteModal({ onClose, onSaved, setError }) {
           <div className="caja-field">
             <label>Tipo de ajuste</label>
             <select value={form.tipo} onChange={set("tipo")} className="caja-input">
-              <option value="SALIDA">Salida de caja</option>
-              <option value="ENTRADA">Entrada de caja</option>
+              <option value="SALIDA">Salida</option>
+              <option value="ENTRADA">Entrada</option>
+            </select>
+          </div>
+          <div className="caja-field">
+            <label>Canal</label>
+            <select value={form.canal} onChange={set("canal")} className="caja-input">
+              <option value="Caja">Efectivo (Caja)</option>
+              <option value="Bancos">Bancos</option>
+              <option value="Tarjeta CR">Tarjeta CR</option>
             </select>
           </div>
           <div className="caja-field">
