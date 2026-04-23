@@ -91,6 +91,14 @@ def verify_password(password: str, password_hash: str):
     return hmac.compare_digest(candidate, expected)
 
 
+def verify_user_password(username: str, password: str) -> bool:
+    """Verifica la contraseña de un usuario por su username. Seguro ante timing attacks."""
+    user = get_auth_user_by_username(username, include_password=True)
+    if not user or not user.get("active"):
+        return False
+    return verify_password(password, user.get("password_hash", ""))
+
+
 def _session_response(user: dict, token: str, expires_at: str):
     return {
         "token": token,

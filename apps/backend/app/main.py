@@ -78,6 +78,8 @@ from database import (  # noqa: E402
     get_dashboard_stats,
     get_balance_canales,
     get_caja_apertura,
+    preview_reinicio_caja,
+    reiniciar_caja,
     get_egresos,
     get_ingresos,
     get_insumos,
@@ -116,6 +118,7 @@ from auth_service import (  # noqa: E402
     ensure_bootstrap_admin_from_env,
     resolve_session,
     revoke_session,
+    verify_user_password,
 )
 import migrate_excel as migrate_excel_module  # noqa: E402
 import migrate_nomina as migrate_nomina_module  # noqa: E402
@@ -237,6 +240,13 @@ class CajaAperturaPayload(BaseModel):
     observaciones: str = ""
 
 
+class CajaReinicioPayload(BaseModel):
+    mes: int
+    ano: int
+    confirmacion: str   # debe ser exactamente "REINICIAR MM/AAAA"
+    password: str       # contraseña del usuario autenticado
+
+
 class NovedadPayload(BaseModel):
     periodo: str
     fecha: str
@@ -276,6 +286,12 @@ def _handle_validation(exc: Exception):
     if isinstance(exc, AppValidationError):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
+
+
+def _require_admin(request: Request):
+    user = getattr(getattr(request, "state", None), "current_user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Solo administradores pueden realizar esta acción.")
 
 
 def _api_ok(data: Any = None, message: str | None = None):
@@ -1053,6 +1069,36 @@ def caja_apertura_post(payload: CajaAperturaPayload):
             payload.observaciones,
         )
         return _api_ok(message="Saldos iniciales guardados correctamente.")
+    except Exception as exc:
+        _handle_validation(exc)
+
+
+@app.get("/api/caja/reiniciar/preview")
+def caja_reiniciar_preview(mes: int = Query(...), ano: int = Query(...), request: Request = None):
+    _require_admin(request)
+    _validate_period(mes, ano)
+    return _api_ok(preview_reinicio_caja(mes, ano))
+
+
+@app.post("/api/caja/reiniciar")
+def caja_reiniciar(payload: CajaReinicioPayload, request: Request):
+    _require_admin(request)
+    _validate_period(payload.mes, payload.ano)
+
+    frase_esperada = f"REINICIAR {payload.mes:02d}/{payload.ano}"
+    if payload.confirmacion.strip().upper() != frase_esperada.upper():
+        raise HTTPException(
+            status_code=400,
+            detail=f"La frase de confirmación no es correcta. Debe ser exactamente: {frase_esperada}",
+        )
+
+    username = request.state.current_user.get("username", "")
+    if not verify_user_password(username, payload.password):
+        raise HTTPException(status_code=401, detail="Contraseña incorrecta. El reinicio fue cancelado.")
+
+    try:
+        result = reiniciar_caja(payload.mes, payload.ano)
+        return _api_ok(result, "Caja reiniciada. El historial fue borrado y registrado en auditoría.")
     except Exception as exc:
         _handle_validation(exc)
 

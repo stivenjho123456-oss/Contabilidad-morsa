@@ -988,6 +988,94 @@ def get_ingresos(mes=None, ano=None):
     return [dict(r) for r in rows]
 
 
+def preview_reinicio_caja(mes, ano):
+    """Devuelve un resumen de lo que se borraría al reiniciar la caja del período."""
+    mes, ano = int(mes), int(ano)
+    mes_str = f'{mes:02d}'
+    ano_str = str(ano)
+    conn = get_connection()
+    n_cuadres = int(conn.execute(
+        "SELECT COUNT(*) FROM cuadre_caja WHERE strftime('%m', fecha)=? AND strftime('%Y', fecha)=?",
+        (mes_str, ano_str),
+    ).fetchone()[0])
+    n_ajustes = int(conn.execute(
+        "SELECT COUNT(*) FROM caja_ajustes WHERE strftime('%m', fecha)=? AND strftime('%Y', fecha)=?",
+        (mes_str, ano_str),
+    ).fetchone()[0])
+    ap_row = conn.execute(
+        "SELECT efectivo, bancos, tarjeta_cr FROM caja_apertura WHERE mes=? AND ano=?",
+        (mes, ano),
+    ).fetchone()
+    conn.close()
+    return {
+        'cuadres': n_cuadres,
+        'ajustes': n_ajustes,
+        'apertura': dict(ap_row) if ap_row else None,
+        'periodo': period_from_month_year(mes, ano),
+        'frase_requerida': f'REINICIAR {mes:02d}/{ano}',
+    }
+
+
+@serialized_write
+def reiniciar_caja(mes, ano):
+    """
+    Elimina todos los registros de caja del período indicado.
+    Solo debe llamarse después de validar identidad y frase de confirmación.
+    Registra un snapshot completo en auditoría antes de borrar.
+    """
+    mes, ano = int(mes), int(ano)
+    ensure_period_open(mes, ano)
+    mes_str = f'{mes:02d}'
+    ano_str = str(ano)
+    conn = get_connection()
+    try:
+        # Captura snapshot antes de borrar (para auditoría forense)
+        cuadres = [dict(r) for r in conn.execute(
+            "SELECT * FROM cuadre_caja WHERE strftime('%m', fecha)=? AND strftime('%Y', fecha)=?",
+            (mes_str, ano_str),
+        ).fetchall()]
+        ajustes = [dict(r) for r in conn.execute(
+            "SELECT * FROM caja_ajustes WHERE strftime('%m', fecha)=? AND strftime('%Y', fecha)=?",
+            (mes_str, ano_str),
+        ).fetchall()]
+        ap_row = conn.execute(
+            "SELECT * FROM caja_apertura WHERE mes=? AND ano=?", (mes, ano),
+        ).fetchone()
+        apertura_snap = dict(ap_row) if ap_row else None
+
+        conn.execute(
+            "DELETE FROM cuadre_caja WHERE strftime('%m', fecha)=? AND strftime('%Y', fecha)=?",
+            (mes_str, ano_str),
+        )
+        conn.execute(
+            "DELETE FROM caja_ajustes WHERE strftime('%m', fecha)=? AND strftime('%Y', fecha)=?",
+            (mes_str, ano_str),
+        )
+        conn.execute(
+            "DELETE FROM caja_apertura WHERE mes=? AND ano=?", (mes, ano),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    periodo = period_from_month_year(mes, ano)
+    result = {
+        'cuadres_eliminados': len(cuadres),
+        'ajustes_eliminados': len(ajustes),
+        'apertura_eliminada': apertura_snap is not None,
+        'periodo': periodo,
+    }
+    log_auditoria(
+        'caja_reinicio', 'RESET', None, periodo,
+        f'Reinicio de caja: {len(cuadres)} cuadres, {len(ajustes)} ajustes, apertura: {apertura_snap is not None}',
+        {'cuadres': cuadres, 'ajustes': ajustes, 'apertura': apertura_snap},
+    )
+    return result
+
+
 def get_caja_apertura(mes, ano):
     conn = get_connection()
     row = conn.execute(

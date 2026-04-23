@@ -16,6 +16,8 @@ export function CajaView({ reload, setError, notify }) {
   const [balance, setBalance] = useState(null);
   const [aperturaCanales, setAperturaCanales] = useState(null);
   const [showAperturaForm, setShowAperturaForm] = useState(false);
+  const [showReinicio, setShowReinicio] = useState(false);
+  const [dangerOpen, setDangerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [showAjusteForm, setShowAjusteForm] = useState(false);
@@ -351,10 +353,42 @@ export function CajaView({ reload, setError, notify }) {
           setError={setError}
         />
       )}
+      <div className="caja-danger-zone">
+        <button className="caja-danger-toggle" onClick={() => setDangerOpen((v) => !v)}>
+          <span>⚠ Zona de riesgo</span>
+          <span className="caja-danger-arrow">{dangerOpen ? "▲" : "▼"}</span>
+        </button>
+        {dangerOpen && (
+          <div className="caja-danger-body">
+            <p className="caja-danger-desc">
+              Las acciones de esta sección son <strong>irreversibles</strong>. Se requieren múltiples confirmaciones y contraseña.
+            </p>
+            <div className="caja-danger-action">
+              <div>
+                <strong>Reiniciar caja del período</strong>
+                <p>Elimina todos los cuadres, ajustes manuales y apertura de {MONTH_NAMES[month - 1]} {year}. No afecta ingresos ni egresos contables.</p>
+              </div>
+              <button className="caja-btn-danger" onClick={() => setShowReinicio(true)}>
+                Reiniciar Caja
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {showAjusteForm && (
         <CajaAjusteModal
           onClose={() => setShowAjusteForm(false)}
           onSaved={() => { setShowAjusteForm(false); loadCaja(); reload(); notify("Ajuste manual registrado.", "success"); }}
+          setError={setError}
+        />
+      )}
+      {showReinicio && (
+        <CajaReinicioModal
+          mes={month}
+          ano={year}
+          onClose={() => setShowReinicio(false)}
+          onSaved={() => { setShowReinicio(false); setDangerOpen(false); loadCaja(); reload(); notify("Caja reiniciada correctamente.", "success"); }}
           setError={setError}
         />
       )}
@@ -624,6 +658,193 @@ function CajaAperturaModal({ mes, ano, current, onClose, onSaved, setError }) {
           <button className="btn-save" onClick={handleSave} disabled={saving}>
             {saving ? "Guardando..." : "Guardar Saldos Iniciales"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CajaReinicioModal({ mes, ano, onClose, onSaved, setError }) {
+  const STEP_PREVIEW  = 1;
+  const STEP_FRASE    = 2;
+  const STEP_PASSWORD = 3;
+  const STEP_DONE     = 4;
+
+  const [step, setStep]         = useState(STEP_PREVIEW);
+  const [preview, setPreview]   = useState(null);
+  const [loadingPreview, setLoadingPreview] = useState(true);
+  const [frase, setFrase]       = useState("");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving]     = useState(false);
+  const [result, setResult]     = useState(null);
+
+  const fraseEsperada = `REINICIAR ${String(mes).padStart(2, "0")}/${ano}`;
+
+  useEffect(() => {
+    request(`/api/caja/reiniciar/preview?mes=${mes}&ano=${ano}`)
+      .then((data) => setPreview(data))
+      .catch((err) => setError(err.message))
+      .finally(() => setLoadingPreview(false));
+  }, [mes, ano]);
+
+  async function handleReinicio() {
+    setSaving(true);
+    try {
+      const res = await request("/api/caja/reiniciar", {
+        method: "POST",
+        body: JSON.stringify({ mes, ano, confirmacion: frase.trim(), password }),
+      });
+      setResult(res);
+      setStep(STEP_DONE);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="caja-modal reinicio-modal">
+        <div className="caja-modal-header reinicio-header">
+          <h3>Reiniciar Caja — {MONTH_NAMES[mes - 1]} {ano}</h3>
+          {step !== STEP_DONE && (
+            <button className="modal-close" onClick={onClose}>✕</button>
+          )}
+        </div>
+
+        {/* ── Paso 1: Preview ── */}
+        {step === STEP_PREVIEW && (
+          <div className="caja-modal-body">
+            {loadingPreview ? (
+              <p className="reinicio-loading">Cargando información del período…</p>
+            ) : (
+              <>
+                <div className="reinicio-warning-banner">
+                  Esta acción es <strong>permanente e irreversible</strong>. Los registros quedan guardados en el log de auditoría pero no se pueden restaurar desde la app.
+                </div>
+                <p className="reinicio-subtitle">Lo siguiente será eliminado:</p>
+                <ul className="reinicio-list">
+                  <li>
+                    <span className="reinicio-icon">📋</span>
+                    <span><strong>{preview?.cuadres ?? 0}</strong> cuadre{preview?.cuadres !== 1 ? "s" : ""} de caja</span>
+                  </li>
+                  <li>
+                    <span className="reinicio-icon">🔧</span>
+                    <span><strong>{preview?.ajustes ?? 0}</strong> ajuste{preview?.ajustes !== 1 ? "s" : ""} manual{preview?.ajustes !== 1 ? "es" : ""}</span>
+                  </li>
+                  <li>
+                    <span className="reinicio-icon">🏁</span>
+                    <span>Apertura de caja: <strong>{preview?.apertura ? "SÍ se eliminará" : "No hay apertura registrada"}</strong></span>
+                  </li>
+                </ul>
+                <p className="reinicio-safe-note">✓ Ingresos y egresos contables <strong>no se tocan</strong>.</p>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Paso 2: Frase de confirmación ── */}
+        {step === STEP_FRASE && (
+          <div className="caja-modal-body">
+            <div className="reinicio-step-badge">Paso 2 de 3 — Confirma el período</div>
+            <p className="reinicio-frase-inst">
+              Para continuar, escribe exactamente la siguiente frase en el campo de abajo:
+            </p>
+            <div className="reinicio-frase-target">{fraseEsperada}</div>
+            <input
+              autoFocus
+              type="text"
+              className="caja-input reinicio-frase-input"
+              placeholder={fraseEsperada}
+              value={frase}
+              onChange={(e) => setFrase(e.target.value)}
+            />
+            {frase.length > 0 && frase.trim().toUpperCase() !== fraseEsperada.toUpperCase() && (
+              <p className="reinicio-frase-error">La frase no coincide exactamente.</p>
+            )}
+          </div>
+        )}
+
+        {/* ── Paso 3: Contraseña ── */}
+        {step === STEP_PASSWORD && (
+          <div className="caja-modal-body">
+            <div className="reinicio-step-badge">Paso 3 de 3 — Verifica tu identidad</div>
+            <p className="reinicio-pass-inst">
+              Ingresa tu contraseña para confirmar que autorizas este reinicio.
+            </p>
+            <input
+              autoFocus
+              type="password"
+              className="caja-input"
+              placeholder="Tu contraseña"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && password && handleReinicio()}
+            />
+            <div className="reinicio-final-warning">
+              Al hacer clic en <strong>Ejecutar Reinicio</strong> se borrarán los datos sin posibilidad de recuperación desde la app.
+            </div>
+          </div>
+        )}
+
+        {/* ── Resultado ── */}
+        {step === STEP_DONE && result && (
+          <div className="caja-modal-body">
+            <div className="reinicio-done-banner">
+              <div className="reinicio-done-icon">✓</div>
+              <strong>Caja reiniciada correctamente</strong>
+            </div>
+            <ul className="reinicio-list reinicio-done-list">
+              <li>Cuadres eliminados: <strong>{result.cuadres_eliminados}</strong></li>
+              <li>Ajustes eliminados: <strong>{result.ajustes_eliminados}</strong></li>
+              <li>Apertura eliminada: <strong>{result.apertura_eliminada ? "Sí" : "No había"}</strong></li>
+            </ul>
+            <p className="reinicio-safe-note">El evento quedó registrado en el log de auditoría.</p>
+          </div>
+        )}
+
+        {/* ── Pie del modal ── */}
+        <div className="caja-modal-footer">
+          {step === STEP_PREVIEW && (
+            <>
+              <button className="btn-cancel" onClick={onClose}>Cancelar</button>
+              <button
+                className="caja-btn-danger"
+                disabled={loadingPreview}
+                onClick={() => setStep(STEP_FRASE)}
+              >
+                Entiendo, continuar →
+              </button>
+            </>
+          )}
+          {step === STEP_FRASE && (
+            <>
+              <button className="btn-cancel" onClick={() => { setFrase(""); setStep(STEP_PREVIEW); }}>← Volver</button>
+              <button
+                className="caja-btn-danger"
+                disabled={frase.trim().toUpperCase() !== fraseEsperada.toUpperCase()}
+                onClick={() => setStep(STEP_PASSWORD)}
+              >
+                Continuar →
+              </button>
+            </>
+          )}
+          {step === STEP_PASSWORD && (
+            <>
+              <button className="btn-cancel" onClick={() => { setPassword(""); setStep(STEP_FRASE); }}>← Volver</button>
+              <button
+                className="caja-btn-danger"
+                disabled={!password || saving}
+                onClick={handleReinicio}
+              >
+                {saving ? "Ejecutando…" : "Ejecutar Reinicio"}
+              </button>
+            </>
+          )}
+          {step === STEP_DONE && (
+            <button className="btn-save" onClick={onSaved}>Cerrar</button>
+          )}
         </div>
       </div>
     </div>
