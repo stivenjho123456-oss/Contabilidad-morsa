@@ -50,6 +50,7 @@ if USE_POSTGRES:
     logger_pre.info("Modo PostgreSQL activado (DATABASE_URL presente)")
 
 from app_paths import get_log_dir  # noqa: E402
+from routers import auth as auth_router, inventario as inventario_router  # noqa: E402
 
 from database import (  # noqa: E402
     AppValidationError,
@@ -142,13 +143,6 @@ RUNTIME_STATUS_CACHE_SECONDS = 30
 RUNTIME_QUERY_CACHE_SECONDS = 20
 _RUNTIME_CACHE_LOCK = threading.RLock()
 
-# ── Rate limiting para login (fuerza bruta) ───────────────────────────────────
-_LOGIN_MAX_ATTEMPTS = 5        # intentos fallidos antes de bloquear
-_LOGIN_WINDOW_SECONDS = 900    # ventana de 15 minutos
-_LOGIN_LOCKOUT_SECONDS = 900   # bloqueo de 15 minutos
-_login_attempts: dict[str, list[float]] = {}  # ip → [timestamps]
-_login_lockouts: dict[str, float] = {}         # ip → unlock_timestamp
-_login_rate_lock = threading.Lock()
 LOG_HANDLERS = [logging.StreamHandler()]
 try:
     LOG_HANDLERS.insert(0, logging.FileHandler(LOG_FILE, encoding="utf-8"))
@@ -168,6 +162,8 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
+app.include_router(auth_router.router)
+app.include_router(inventario_router.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in os.getenv("MORSA_ALLOWED_ORIGINS", ",".join(DEFAULT_ALLOWED_ORIGINS)).split(",") if origin.strip()],
@@ -261,16 +257,6 @@ class CierreMensualPayload(BaseModel):
     observacion: str = ""
 
 
-class AuthLoginPayload(BaseModel):
-    username: str
-    password: str
-
-
-class AuthBootstrapPayload(BaseModel):
-    username: str
-    full_name: str
-    password: str
-    password_confirm: str
 
 
 def _handle_validation(exc: Exception):
@@ -700,97 +686,6 @@ def on_startup():
         raise RuntimeError("No fue posible iniciar la aplicación.") from exc
 
 
-@app.get("/api/auth/status")
-def auth_status():
-    return _api_ok(get_auth_status())
-
-
-@app.post("/api/auth/bootstrap")
-def auth_bootstrap(payload: AuthBootstrapPayload, request: Request):
-    if payload.password != payload.password_confirm:
-        raise HTTPException(status_code=400, detail="La confirmación de contraseña no coincide.")
-    try:
-        session = bootstrap_admin_account(
-            payload.username,
-            payload.full_name,
-            payload.password,
-            user_agent=request.headers.get("user-agent", ""),
-            ip_address=_client_ip(request),
-        )
-        return _api_ok(session, message="Cuenta inicial creada correctamente.")
-    except Exception as exc:
-        _handle_validation(exc)
-
-
-def _check_login_rate(ip: str):
-    now = time.time()
-    with _login_rate_lock:
-        unlock_at = _login_lockouts.get(ip, 0)
-        if unlock_at > now:
-            remaining = int(unlock_at - now)
-            raise HTTPException(
-                status_code=429,
-                detail=f"Demasiados intentos fallidos. Intenta de nuevo en {remaining // 60 + 1} minutos.",
-            )
-        attempts = [t for t in _login_attempts.get(ip, []) if now - t < _LOGIN_WINDOW_SECONDS]
-        _login_attempts[ip] = attempts
-
-
-def _record_login_failure(ip: str):
-    now = time.time()
-    with _login_rate_lock:
-        attempts = _login_attempts.setdefault(ip, [])
-        attempts.append(now)
-        recent = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
-        _login_attempts[ip] = recent
-        if len(recent) >= _LOGIN_MAX_ATTEMPTS:
-            _login_lockouts[ip] = now + _LOGIN_LOCKOUT_SECONDS
-            _login_attempts[ip] = []
-            logger.warning("Login bloqueado por fuerza bruta — IP: %s", ip)
-
-
-def _clear_login_failures(ip: str):
-    with _login_rate_lock:
-        _login_attempts.pop(ip, None)
-        _login_lockouts.pop(ip, None)
-
-
-@app.post("/api/auth/login")
-def auth_login(payload: AuthLoginPayload, request: Request):
-    ip = _client_ip(request)
-    _check_login_rate(ip)
-    session = authenticate_user(
-        payload.username,
-        payload.password,
-        user_agent=request.headers.get("user-agent", ""),
-        ip_address=ip,
-    )
-    if not session:
-        _record_login_failure(ip)
-        raise HTTPException(status_code=401, detail="Credenciales inválidas.")
-    _clear_login_failures(ip)
-    return _api_ok(session, message="Sesión iniciada.")
-
-
-@app.get("/api/auth/session")
-def auth_session(request: Request):
-    session = getattr(request.state, "auth_session", None)
-    if not session:
-        raise HTTPException(status_code=401, detail="Sesión inválida o vencida.")
-    return _api_ok(
-        {
-            "header": API_TOKEN_HEADER,
-            "scheme": API_TOKEN_SCHEME,
-            "expires_at": session["expires_at"],
-            "user": session["user"],
-        }
-    )
-
-
-@app.post("/api/auth/logout")
-def auth_logout(request: Request):
-    revoke_session(_parse_bearer_token(request.headers.get(API_TOKEN_HEADER, "")))
-    return _api_ok(message="Sesión cerrada correctamente.")
 
 
 @app.exception_handler(HTTPException)
@@ -1733,40 +1628,8 @@ def export_nomina(periodo: str = Query(...)):
     return _build_excel_response(wb, f'Nomina_{periodo.replace(" ", "_")}.xlsx')
 
 
-# ── Inventario Diario ──────────────────────────────────────────────────────────
-
-class InventarioItemPayload(BaseModel):
-    insumo_id: int | None = None
-    nombre_extra: str | None = None
-    estado: str
-    cantidad: float | None = None
-    notas: str | None = None
 
 
-class InventarioGuardarPayload(BaseModel):
-    fecha: str
-    items: list[InventarioItemPayload]
-    observaciones: str | None = None
-
-
-@app.get("/api/insumos")
-def get_insumos_list():
-    return _api_ok(get_insumos())
-
-
-@app.get("/api/inventario")
-def get_inventario(fecha: str = Query(...)):
-    return _api_ok(get_inventario_diario(fecha))
-
-
-@app.post("/api/inventario")
-def save_inventario(payload: InventarioGuardarPayload, request: Request):
-    try:
-        usuario_id = request.state.current_user.get("id") if hasattr(request.state, "current_user") else None
-        save_inventario_diario(payload.fecha, payload.items, usuario_id=usuario_id, observaciones=payload.observaciones)
-        return _api_ok(message="Inventario guardado correctamente.")
-    except Exception as exc:
-        _handle_validation(exc)
 
 
 if FRONTEND_DIST_DIR.exists():
