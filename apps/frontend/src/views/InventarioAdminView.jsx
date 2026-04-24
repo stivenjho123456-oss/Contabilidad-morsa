@@ -28,6 +28,79 @@ export function InventarioAdminView({ reload, setError, notify }) {
     window.print();
   }
 
+  function handlePrintPOS() {
+    const traerPorCategoria = {};
+    registro.forEach((item) => {
+      if (item.estado !== "traer") return;
+      const cat = item.categoria || "General";
+      if (!traerPorCategoria[cat]) traerPorCategoria[cat] = [];
+      traerPorCategoria[cat].push(item);
+    });
+
+    const total = registro.filter((i) => i.estado === "traer").length;
+    const sep = "--------------------------------";
+
+    let lineas = "";
+    Object.entries(traerPorCategoria).forEach(([cat, items]) => {
+      lineas += `<div class="cat">${cat.toUpperCase()}</div>`;
+      items.forEach((item) => {
+        const notas = item.notas || (item.cantidad ? `${item.cantidad} ${item.unidad}` : "");
+        lineas += `
+          <div class="fila">
+            <span class="nombre">${item.nombre}</span>
+            ${notas ? `<span class="notas">${notas}</span>` : ""}
+          </div>`;
+      });
+    });
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Inventario POS</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 12px;
+      width: 80mm;
+      padding: 4mm 3mm;
+      color: #000;
+    }
+    .titulo { font-size: 14px; font-weight: bold; text-align: center; }
+    .subtitulo { text-align: center; font-size: 11px; margin-bottom: 4px; }
+    .sep { border-top: 1px dashed #000; margin: 5px 0; }
+    .cat {
+      font-size: 10px; font-weight: bold; letter-spacing: 0.05em;
+      margin-top: 7px; margin-bottom: 3px; text-decoration: underline;
+    }
+    .fila { margin-bottom: 4px; }
+    .nombre { display: block; font-size: 12px; }
+    .notas { display: block; font-size: 11px; padding-left: 8px; color: #333; }
+    .total { text-align: right; font-size: 11px; margin-top: 6px; }
+    @media print {
+      body { width: 80mm; }
+      @page { margin: 0; size: 80mm auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="titulo">LA MORSA</div>
+  <div class="subtitulo">Lista de compras — ${fechaLegible}</div>
+  <div class="sep"></div>
+  ${lineas}
+  <div class="sep"></div>
+  <div class="total">Total: ${total} ítem${total !== 1 ? "s" : ""}</div>
+</body>
+</html>`;
+
+    const win = window.open("", "_blank", "width=400,height=600");
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 300);
+  }
+
   if (cargando) {
     return <div className="loading-card">Cargando inventario...</div>;
   }
@@ -68,9 +141,14 @@ export function InventarioAdminView({ reload, setError, notify }) {
             style={{ padding: "8px", borderRadius: "4px", border: "1px solid #ccc" }}
           />
           {totalTraer > 0 && (
-            <button className="inv-print-btn no-print" onClick={handlePrint}>
-              Imprimir lista ({totalTraer})
-            </button>
+            <>
+              <button className="inv-print-btn no-print" onClick={handlePrint}>
+                Imprimir A4
+              </button>
+              <button className="inv-print-btn inv-print-btn-pos no-print" onClick={handlePrintPOS}>
+                Imprimir POS
+              </button>
+            </>
           )}
         </div>
       </div>
