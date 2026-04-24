@@ -77,7 +77,7 @@ export function InventarioAdminView({ reload, setError, notify }) {
                         {item.estado === "hay" ? "Hay" : "Traer"}
                       </span>
                     </div>
-                    <div>{item.cantidad ? `${item.cantidad} ${item.unidad}` : "-"}</div>
+                    <div>{item.notas || (item.cantidad ? `${item.cantidad} ${item.unidad}` : "-")}</div>
                   </div>
                 ))}
               </div>
