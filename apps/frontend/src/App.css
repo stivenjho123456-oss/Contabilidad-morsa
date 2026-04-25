@@ -1259,6 +1259,50 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
 .inv-print-btn-pos { background: #7c3aed; }
 .inv-print-btn-pos:hover { background: #6d28d9; }
 
+/* ── Turnos (mobile) ───────────────────────────────────────────────────────── */
+.inv-turno-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px 0 4px;
+  flex-wrap: wrap;
+}
+.inv-turno-tabs { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.inv-turno-tab {
+  padding: 6px 12px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  border: 2px solid #cbd5e1; background: #f8fafc; color: #64748b; cursor: pointer;
+  display: flex; align-items: center; gap: 5px;
+}
+.inv-turno-tab-activo {
+  border-color: #1e3a5f; background: #1e3a5f; color: white;
+}
+.inv-turno-tab-nuevo { border-color: #059669; background: #059669; }
+.inv-turno-badge {
+  background: #ef4444; color: white; border-radius: 10px;
+  padding: 1px 6px; font-size: 11px;
+}
+.inv-turno-nuevo-btn {
+  padding: 6px 12px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  border: 2px dashed #059669; background: transparent; color: #059669; cursor: pointer;
+  white-space: nowrap;
+}
+.inv-turno-nuevo-btn:hover { background: #ecfdf5; }
+
+/* ── Turnos (admin) ────────────────────────────────────────────────────────── */
+.inv-admin-turnos {
+  display: flex; gap: 8px; padding: 12px 20px; border-bottom: 1px solid #e2e8f0;
+  flex-wrap: wrap;
+}
+.inv-admin-turno-btn {
+  padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  border: 2px solid #cbd5e1; background: #f8fafc; color: #64748b; cursor: pointer;
+  display: flex; align-items: center; gap: 8px;
+}
+.inv-admin-turno-btn:hover { border-color: #1e3a5f; color: #1e3a5f; }
+.inv-admin-turno-activo { border-color: #1e3a5f; background: #1e3a5f; color: white; }
+.inv-admin-turno-activo:hover { color: white; }
+.inv-admin-turno-badge {
+  background: #ef4444; color: white; border-radius: 10px;
+  padding: 1px 8px; font-size: 11px;
+}
+
 /* ── Hoja de impresión ─────────────────────────────────────────────────────── */
 .print-only { display: none; }
 

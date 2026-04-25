@@ -4,17 +4,38 @@ import { request } from "../lib/api";
 export function InventarioAdminView({ reload, setError, notify }) {
   const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD en hora local
   const [fecha, setFecha] = useState(today);
+  const [turno, setTurno] = useState(1);
+  const [turnosDelDia, setTurnosDelDia] = useState([]);
   const [registro, setRegistro] = useState([]);
   const [cargando, setCargando] = useState(true);
 
   useEffect(() => {
-    cargarRegistro();
+    cargarTurnos();
   }, [fecha]);
+
+  useEffect(() => {
+    cargarRegistro();
+  }, [fecha, turno]);
+
+  async function cargarTurnos() {
+    try {
+      const data = await request(`/api/inventario/turnos?fecha=${fecha}`);
+      setTurnosDelDia(data);
+      if (data.length > 0) {
+        setTurno(data[data.length - 1].turno);
+      } else {
+        setTurno(1);
+      }
+    } catch {
+      setTurnosDelDia([]);
+      setTurno(1);
+    }
+  }
 
   async function cargarRegistro() {
     try {
       setCargando(true);
-      const data = await request(`/api/inventario?fecha=${fecha}`);
+      const data = await request(`/api/inventario?fecha=${fecha}&turno=${turno}`);
       setRegistro(data);
     } catch (err) {
       setError(err.message);
@@ -38,7 +59,6 @@ export function InventarioAdminView({ reload, setError, notify }) {
     });
 
     const total = registro.filter((i) => i.estado === "traer").length;
-    const sep = "--------------------------------";
 
     let lineas = "";
     Object.entries(traerPorCategoria).forEach(([cat, items]) => {
@@ -53,6 +73,7 @@ export function InventarioAdminView({ reload, setError, notify }) {
       });
     });
 
+    const turnoLabel = turnosDelDia.length > 1 ? ` — Turno ${turno}` : "";
     const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -86,7 +107,7 @@ export function InventarioAdminView({ reload, setError, notify }) {
 </head>
 <body>
   <div class="titulo">LA MORSA</div>
-  <div class="subtitulo">Lista de compras — ${fechaLegible}</div>
+  <div class="subtitulo">Lista de compras — ${fechaLegible}${turnoLabel}</div>
   <div class="sep"></div>
   ${lineas}
   <div class="sep"></div>
@@ -112,7 +133,6 @@ export function InventarioAdminView({ reload, setError, notify }) {
     byCategoria[cat].push(item);
   });
 
-  // Solo categorías que tengan al menos un ítem "traer"
   const byCategoriaTrae = {};
   registro.forEach((item) => {
     if (item.estado !== "traer") return;
@@ -153,6 +173,24 @@ export function InventarioAdminView({ reload, setError, notify }) {
         </div>
       </div>
 
+      {/* ── Selector de turnos ── */}
+      {turnosDelDia.length > 0 && (
+        <div className="inv-admin-turnos no-print">
+          {turnosDelDia.map((t) => (
+            <button
+              key={t.turno}
+              className={`inv-admin-turno-btn ${turno === t.turno ? "inv-admin-turno-activo" : ""}`}
+              onClick={() => setTurno(t.turno)}
+            >
+              Turno {t.turno}
+              {t.items_traer > 0 && (
+                <span className="inv-admin-turno-badge">{t.items_traer} por traer</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ── Vista normal (oculta al imprimir) ── */}
       <div className="panel no-print">
         {registro.length === 0 ? (
@@ -191,7 +229,10 @@ export function InventarioAdminView({ reload, setError, notify }) {
       {/* ── Hoja de impresión (solo visible al imprimir) ── */}
       <div className="inv-print-sheet print-only">
         <div className="inv-print-header">
-          <div className="inv-print-title">Lista de compras — La Morsa</div>
+          <div className="inv-print-title">
+            Lista de compras — La Morsa
+            {turnosDelDia.length > 1 ? ` (Turno ${turno})` : ""}
+          </div>
           <div className="inv-print-fecha">{fechaLegible}</div>
         </div>
 

@@ -2750,7 +2750,7 @@ def get_insumos():
     return [dict(r) for r in rows]
 
 
-def get_inventario_diario(fecha):
+def get_inventario_diario(fecha, turno=1):
     conn = get_connection()
     rows = conn.execute(
         '''SELECT inv.*,
@@ -2758,9 +2758,26 @@ def get_inventario_diario(fecha):
                   COALESCE(ins.categoria, 'Extra') AS categoria
            FROM inventario_diario inv
            LEFT JOIN insumos ins ON inv.insumo_id = ins.id
-           WHERE inv.fecha = ?
+           WHERE inv.fecha = ? AND inv.turno = ?
            ORDER BY CASE WHEN ins.categoria IS NULL THEN 1 ELSE 0 END,
                     ins.categoria, COALESCE(ins.nombre, inv.nombre_extra)''',
+        (fecha, turno)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_turnos_del_dia(fecha):
+    conn = get_connection()
+    rows = conn.execute(
+        '''SELECT t.turno, t.observaciones, t.created_at,
+                  COUNT(d.id) AS total_items,
+                  SUM(CASE WHEN d.estado = 'traer' THEN 1 ELSE 0 END) AS items_traer
+           FROM inventario_turno t
+           LEFT JOIN inventario_diario d ON d.fecha = t.fecha AND d.turno = t.turno
+           WHERE t.fecha = ?
+           GROUP BY t.turno, t.observaciones, t.created_at
+           ORDER BY t.turno''',
         (fecha,)
     ).fetchall()
     conn.close()
@@ -2768,10 +2785,10 @@ def get_inventario_diario(fecha):
 
 
 @serialized_write
-def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None):
+def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None, turno=1):
     conn = get_connection()
     try:
-        conn.execute('DELETE FROM inventario_diario WHERE fecha=?', (fecha,))
+        conn.execute('DELETE FROM inventario_diario WHERE fecha=? AND turno=?', (fecha, turno))
         for item in items:
             insumo_id = item.get('insumo_id')
             nombre_extra = (item.get('nombre_extra') or '').strip() or None
@@ -2781,18 +2798,18 @@ def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None):
             if not (insumo_id or nombre_extra) or not estado:
                 raise AppValidationError('Cada item debe tener insumo_id o nombre_extra, y estado.')
             conn.execute(
-                '''INSERT INTO inventario_diario (fecha, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                (fecha, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, datetime.now().isoformat())
+                '''INSERT INTO inventario_diario (fecha, turno, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (fecha, turno, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, datetime.now().isoformat())
             )
+        conn.execute('DELETE FROM inventario_turno WHERE fecha=? AND turno=?', (fecha, turno))
         conn.execute(
-            '''INSERT INTO inventario_turno (fecha, observaciones, usuario_id, created_at)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT (fecha) DO UPDATE SET observaciones=EXCLUDED.observaciones''',
-            (fecha, observaciones, usuario_id, datetime.now().isoformat())
+            '''INSERT INTO inventario_turno (fecha, turno, observaciones, usuario_id, created_at)
+               VALUES (?, ?, ?, ?, ?)''',
+            (fecha, turno, observaciones, usuario_id, datetime.now().isoformat())
         )
         conn.commit()
-        log_auditoria('inventario_diario', 'SAVE', 0, fecha, f'Inventario del {fecha}', {'items': len(items)})
+        log_auditoria('inventario_diario', 'SAVE', 0, fecha, f'Inventario del {fecha} turno {turno}', {'items': len(items), 'turno': turno})
     except Exception:
         conn.rollback()
         raise
