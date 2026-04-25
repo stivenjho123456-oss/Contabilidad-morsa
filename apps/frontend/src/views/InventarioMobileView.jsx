@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { request } from "../lib/api";
 
 export function InventarioMobileView({ session, setError, notify }) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD en hora local
   const [fecha, setFecha] = useState(today);
   const [insumos, setInsumos] = useState([]);
   const [registro, setRegistro] = useState({});
@@ -11,8 +11,10 @@ export function InventarioMobileView({ session, setError, notify }) {
   const [guardando, setGuardando] = useState(false);
   const [cargando, setCargando] = useState(true);
   const [busqueda, setBusqueda] = useState("");
+  const [modificados, setModificados] = useState(new Set()); // IDs tocados en esta sesión
 
   useEffect(() => {
+    setModificados(new Set());
     cargarInsumos();
     cargarRegistro();
   }, [fecha]);
@@ -57,15 +59,21 @@ export function InventarioMobileView({ session, setError, notify }) {
   async function guardar() {
     try {
       setGuardando(true);
-      const items = insumos.map((ins) => {
-        const item = registro[ins.id] || { insumo_id: ins.id, estado: "hay" };
-        return {
-          insumo_id: ins.id,
-          estado: item.estado || "hay",
-          cantidad: item.cantidad || null,
-          notas: item.notas || null,
-        };
-      });
+      // Guardar solo ítems que el usuario tocó esta sesión (modificados)
+      // o que ya tenían registro guardado en BD (cargados del servidor).
+      // Los ítems intactos del catálogo sin registro = "hay" implícito, no se persisten.
+      const idsConRegistroPrevio = new Set(Object.keys(registro).map(Number));
+      const items = insumos
+        .filter((ins) => modificados.has(ins.id) || idsConRegistroPrevio.has(ins.id))
+        .map((ins) => {
+          const item = registro[ins.id] || { estado: "hay" };
+          return {
+            insumo_id: ins.id,
+            estado: item.estado || "hay",
+            cantidad: item.cantidad || null,
+            notas: item.notas || null,
+          };
+        });
 
       const extrasValidos = extras
         .filter((e) => e.nombre.trim())
@@ -201,23 +209,25 @@ export function InventarioMobileView({ session, setError, notify }) {
                       <div className="inv-toggles">
                         <button
                           className={`inv-btn-hay ${esHay ? "inv-btn-hay-activo" : ""}`}
-                          onClick={() =>
+                          onClick={() => {
+                            setModificados((m) => new Set([...m, ins.id]));
                             setRegistro((cur) => ({
                               ...cur,
                               [ins.id]: { ...item, estado: "hay", cantidad: null },
-                            }))
-                          }
+                            }));
+                          }}
                         >
                           HAY
                         </button>
                         <button
                           className={`inv-btn-traer ${!esHay ? "inv-btn-traer-activo" : ""}`}
-                          onClick={() =>
+                          onClick={() => {
+                            setModificados((m) => new Set([...m, ins.id]));
                             setRegistro((cur) => ({
                               ...cur,
                               [ins.id]: { ...item, estado: "traer" },
-                            }))
-                          }
+                            }));
+                          }}
                         >
                           TRAER
                         </button>
@@ -228,12 +238,13 @@ export function InventarioMobileView({ session, setError, notify }) {
                           type="text"
                           placeholder="¿Cuánto? Ej: 1 bolsa, 2 latas..."
                           value={item.notas || ""}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            setModificados((m) => new Set([...m, ins.id]));
                             setRegistro((cur) => ({
                               ...cur,
                               [ins.id]: { ...item, notas: e.target.value },
-                            }))
-                          }
+                            }));
+                          }}
                           className="inv-notas-input"
                         />
                       )}

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { request } from "../lib/api";
 
 export function InventarioAdminView({ reload, setError, notify }) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD en hora local
   const [fecha, setFecha] = useState(today);
   const [registro, setRegistro] = useState([]);
   const [cargando, setCargando] = useState(true);
