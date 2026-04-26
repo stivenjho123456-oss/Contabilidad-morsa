@@ -566,7 +566,7 @@ def run_pending_migrations() -> list[str]:
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 version    INTEGER PRIMARY KEY,
                 name       TEXT NOT NULL,
-                applied_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS'))
+                applied_at TEXT NOT NULL
             )
         """)
 
@@ -623,9 +623,10 @@ def run_pending_migrations() -> list[str]:
                         f"Migración {version} ({filename}) falló — revisa los logs para más detalles."
                     ) from exc
 
+            from datetime import datetime as _dt
             conn.execute(
-                "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
-                (version, filename),
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                (version, filename, _dt.now().isoformat(timespec="seconds")),
             )
             applied_versions.append(filename)
             _migrations_logger.info("Migración %04d aplicada correctamente.", version)
