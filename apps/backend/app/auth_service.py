@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import os
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta
 
 from database import (
@@ -32,6 +34,39 @@ BOOTSTRAP_ADMIN_USERNAME = os.getenv("MORSA_ADMIN_USERNAME", "").strip()
 BOOTSTRAP_ADMIN_PASSWORD = os.getenv("MORSA_ADMIN_PASSWORD", "").strip()
 BOOTSTRAP_ADMIN_FULL_NAME = os.getenv("MORSA_ADMIN_FULL_NAME", "Administrador General").strip() or "Administrador General"
 
+# ── Caché de sesiones en memoria ──────────────────────────────────────────────
+# Evita 2 queries a la BD por cada request autenticado.
+# TTL corto (30s) garantiza que revocaciones y cambios de rol se reflejen rápido.
+_SESSION_CACHE_TTL = 30.0           # segundos que dura una entrada en caché
+_SESSION_TOUCH_INTERVAL = 300.0     # solo actualizar last_seen_at cada 5 minutos
+
+_session_cache: dict[str, tuple[dict, float]] = {}  # token_hash -> (session, monotonic_time)
+_session_cache_lock = threading.Lock()
+
+
+def _get_cached_session(token_hash: str) -> dict | None:
+    with _session_cache_lock:
+        entry = _session_cache.get(token_hash)
+        if entry is None:
+            return None
+        session_data, cached_at = entry
+        if time.monotonic() - cached_at > _SESSION_CACHE_TTL:
+            del _session_cache[token_hash]
+            return None
+        return session_data
+
+
+def _put_cached_session(token_hash: str, session_data: dict) -> None:
+    with _session_cache_lock:
+        _session_cache[token_hash] = (session_data, time.monotonic())
+
+
+def _invalidate_cached_session(token_hash: str) -> None:
+    with _session_cache_lock:
+        _session_cache.pop(token_hash, None)
+
+
+# ── Helpers internos ──────────────────────────────────────────────────────────
 
 def _auth_now():
     return datetime.now()
@@ -144,8 +179,6 @@ def bootstrap_admin_account(username: str, full_name: str, password: str, *, use
         raise AppValidationError("La cuenta inicial ya fue configurada.")
     user = create_auth_user(username, full_name, hash_password(password), role="admin", active=True)
     if user is None:
-        # El INSERT pudo haberse confirmado pero la extracción del id falló (PostgreSQL).
-        # Intentar recuperar el usuario recién creado por username.
         user = get_auth_user_by_username(username)
     if user is None:
         raise AppValidationError("El usuario fue creado pero no pudo verificarse. Intenta iniciar sesión.")
@@ -182,11 +215,31 @@ def authenticate_user(username: str, password: str, *, user_agent: str = "", ip_
 def resolve_session(token: str):
     if not token:
         return None
-    session = get_auth_session_by_hash(_token_hash(token))
+
+    token_hash = _token_hash(token)
+
+    # Cache hit — sin tocar la BD
+    cached = _get_cached_session(token_hash)
+    if cached is not None:
+        return cached
+
+    # Cache miss — consultar BD
+    session = get_auth_session_by_hash(token_hash)
     if not session:
         return None
-    touch_auth_session(session["id"])
-    return {
+
+    # Solo actualizar last_seen_at si pasaron más de 5 minutos
+    last_seen_str = session.get("last_seen_at", "")
+    try:
+        last_seen_dt = datetime.fromisoformat(last_seen_str)
+        needs_touch = (_auth_now() - last_seen_dt).total_seconds() > _SESSION_TOUCH_INTERVAL
+    except Exception:
+        needs_touch = True
+
+    if needs_touch:
+        touch_auth_session(session["id"])
+
+    result = {
         "header": SESSION_HEADER,
         "scheme": SESSION_SCHEME,
         "expires_at": session["expires_at"],
@@ -194,11 +247,18 @@ def resolve_session(token: str):
         "session_id": session["id"],
     }
 
+    _put_cached_session(token_hash, result)
+    return result
+
 
 def revoke_session(token: str):
     if not token:
         return
-    session = resolve_session(token)
-    revoke_auth_session(_token_hash(token))
+    token_hash = _token_hash(token)
+    # Obtener datos para auditoría antes de revocar
+    session = get_auth_session_by_hash(token_hash)
+    # Revocar en BD e invalidar caché inmediatamente
+    revoke_auth_session(token_hash)
+    _invalidate_cached_session(token_hash)
     if session:
         log_auditoria("auth_session", "LOGOUT", entidad_id=session["user"]["id"], detalle=f"Cierre de sesión de {session['user']['username']}.")
