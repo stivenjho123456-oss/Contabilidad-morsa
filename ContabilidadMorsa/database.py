@@ -452,8 +452,18 @@ def count_auth_users():
         conn.close()
 
 
+_bootstrap_done: bool | None = None  # None = not checked yet
+
+
 def auth_bootstrap_required():
-    return count_auth_users() == 0
+    global _bootstrap_done
+    # Once an admin exists it can never go back to zero — cache the False result.
+    if _bootstrap_done is True:
+        return False
+    result = count_auth_users() == 0
+    if not result:
+        _bootstrap_done = True
+    return result
 
 
 def get_auth_user_by_username(username, include_password=False):

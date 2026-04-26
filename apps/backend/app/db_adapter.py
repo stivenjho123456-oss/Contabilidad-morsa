@@ -437,12 +437,12 @@ def _get_pool():
         if "sslmode" not in url:
             url = url.rstrip("/") + "?sslmode=require"
         # Con URL usamos dsn; los kwargs extra no aplican
-        _pool = psycopg2.pool.ThreadedConnectionPool(1, 8, dsn=url)
+        _pool = psycopg2.pool.ThreadedConnectionPool(2, 20, dsn=url)
         return _pool
     else:
         raise RuntimeError("No se encontró configuración de base de datos.")
 
-    _pool = psycopg2.pool.ThreadedConnectionPool(1, 8, **kwargs)
+    _pool = psycopg2.pool.ThreadedConnectionPool(2, 20, **kwargs)
     return _pool
 
 
