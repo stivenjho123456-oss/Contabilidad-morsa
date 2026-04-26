@@ -2768,7 +2768,7 @@ def get_inventario_diario(fecha, turno=1):
                   COALESCE(ins.categoria, 'Extra') AS categoria
            FROM inventario_diario inv
            LEFT JOIN insumos ins ON inv.insumo_id = ins.id
-           WHERE inv.fecha = ? AND inv.turno = ?
+           WHERE inv.fecha = ? AND inv.turno = ? AND inv.deleted_at IS NULL
            ORDER BY CASE WHEN ins.categoria IS NULL THEN 1 ELSE 0 END,
                     ins.categoria, COALESCE(ins.nombre, inv.nombre_extra)''',
         (fecha, turno)
@@ -2784,8 +2784,9 @@ def get_turnos_del_dia(fecha):
                   COUNT(d.id) AS total_items,
                   SUM(CASE WHEN d.estado = 'traer' THEN 1 ELSE 0 END) AS items_traer
            FROM inventario_turno t
-           LEFT JOIN inventario_diario d ON d.fecha = t.fecha AND d.turno = t.turno
-           WHERE t.fecha = ?
+           LEFT JOIN inventario_diario d
+                  ON d.fecha = t.fecha AND d.turno = t.turno AND d.deleted_at IS NULL
+           WHERE t.fecha = ? AND t.deleted_at IS NULL
            GROUP BY t.turno, t.observaciones, t.created_at
            ORDER BY t.turno''',
         (fecha,)
@@ -2798,7 +2799,12 @@ def get_turnos_del_dia(fecha):
 def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None, turno=1):
     conn = get_connection()
     try:
-        conn.execute('DELETE FROM inventario_diario WHERE fecha=? AND turno=?', (fecha, turno))
+        now = datetime.now().isoformat()
+        # Soft delete: marcar registros anteriores del mismo turno como eliminados
+        conn.execute(
+            'UPDATE inventario_diario SET deleted_at=? WHERE fecha=? AND turno=? AND deleted_at IS NULL',
+            (now, fecha, turno)
+        )
         for item in items:
             insumo_id = item.get('insumo_id')
             nombre_extra = (item.get('nombre_extra') or '').strip() or None
@@ -2810,18 +2816,96 @@ def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None, tu
             conn.execute(
                 '''INSERT INTO inventario_diario (fecha, turno, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                (fecha, turno, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, datetime.now().isoformat())
+                (fecha, turno, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, now)
             )
-        conn.execute('DELETE FROM inventario_turno WHERE fecha=? AND turno=?', (fecha, turno))
+        # Soft delete del turno anterior y crear nuevo
+        conn.execute(
+            'UPDATE inventario_turno SET deleted_at=? WHERE fecha=? AND turno=? AND deleted_at IS NULL',
+            (now, fecha, turno)
+        )
         conn.execute(
             '''INSERT INTO inventario_turno (fecha, turno, observaciones, usuario_id, created_at)
                VALUES (?, ?, ?, ?, ?)''',
-            (fecha, turno, observaciones, usuario_id, datetime.now().isoformat())
+            (fecha, turno, observaciones, usuario_id, now)
         )
         conn.commit()
         log_auditoria('inventario_diario', 'SAVE', 0, fecha, f'Inventario del {fecha} turno {turno}', {'items': len(items), 'turno': turno})
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+# ── Backup ────────────────────────────────────────────────────────────────────
+
+_BACKUP_TABLES = [
+    'insumos',
+    'inventario_diario',
+    'inventario_turno',
+    'ingresos',
+    'egresos',
+    'caja_ajustes',
+    'caja_apertura',
+    'cuadre_caja',
+    'auditoria',
+]
+
+
+def backup_critical_tables():
+    """Exporta las tablas críticas a JSON y las guarda en la tabla archivos.
+
+    Devuelve un dict con metadatos del backup generado.
+    Conserva los últimos 30 backups; elimina los más antiguos automáticamente.
+    """
+    import json as _json
+
+    conn = get_connection()
+    data = {}
+    try:
+        for table in _BACKUP_TABLES:
+            rows = conn.execute(f'SELECT * FROM {table}').fetchall()
+            data[table] = [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+    now = datetime.now()
+    fecha_str = now.strftime('%Y-%m-%d')
+    timestamp_str = now.isoformat(timespec='seconds')
+    content = _json.dumps(
+        {'generated_at': timestamp_str, 'tables': data},
+        ensure_ascii=False,
+        default=str,
+    ).encode('utf-8')
+
+    file_name = f'backup_{fecha_str}.json'
+    archivo_id = create_archivo_blob('backup', file_name, 'application/json', len(content), content)
+
+    # Retener solo los últimos 30 backups
+    _purge_old_backups(keep=30)
+
+    return {
+        'archivo_id': archivo_id,
+        'file_name': file_name,
+        'size_bytes': len(content),
+        'tables': list(data.keys()),
+        'rows': {t: len(v) for t, v in data.items()},
+        'generated_at': timestamp_str,
+    }
+
+
+def _purge_old_backups(keep: int = 30):
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM archivos WHERE scope='backup' ORDER BY created_at DESC",
+        ).fetchall()
+        to_delete = [r[0] for r in rows[keep:]]
+        for archivo_id in to_delete:
+            conn.execute('DELETE FROM archivos WHERE id=?', (archivo_id,))
+        if to_delete:
+            conn.commit()
+    except Exception:
+        conn.rollback()
     finally:
         conn.close()

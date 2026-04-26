@@ -40,6 +40,7 @@ from db_adapter import (  # noqa: E402
     get_pg_database_health,
     get_pg_schema_report,
     require_pg_schema,
+    run_pending_migrations,
 )
 if USE_POSTGRES:
     # Parchamos get_connection en database para que use PostgreSQL
@@ -99,6 +100,7 @@ from database import (  # noqa: E402
     period_from_month_year,
     save_caja_apertura,
     save_cuadre_caja,
+    backup_critical_tables,
     save_inventario_diario,
     save_nomina_asistencia,
     save_nomina_novedad,
@@ -694,6 +696,9 @@ def on_startup():
 
     try:
         if USE_POSTGRES:
+            applied = run_pending_migrations()
+            if applied:
+                logger.info("Migraciones aplicadas: %s", applied)
             app.state.runtime["schema_status"] = require_pg_schema()
             if auth_bootstrap_required() and not bootstrap_admin_env_configured():
                 raise RuntimeError(
@@ -1388,6 +1393,16 @@ def reabrir_mes(payload: CierreMensualPayload):
     _validate_period(payload.mes, payload.ano)
     result = set_cierre_mensual(payload.mes, payload.ano, False, payload.observacion)
     return _api_ok(result, "Mes reabierto correctamente.")
+
+
+@app.post("/api/admin/backup")
+def trigger_backup(request: Request):
+    _require_admin(request)
+    try:
+        result = backup_critical_tables()
+        return _api_ok(result, "Backup generado correctamente.")
+    except Exception as exc:
+        _handle_validation(exc)
 
 
 @app.get("/api/auditoria")

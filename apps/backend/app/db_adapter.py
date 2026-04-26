@@ -6,6 +6,7 @@ solo como respaldo explícito para pruebas automatizadas cuando MORSA_ALLOW_SQLI
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -77,11 +78,12 @@ REQUIRED_PG_SCHEMA: dict[str, tuple[str, ...]] = {
     ),
     "inventario_diario": (
         "id", "fecha", "turno", "insumo_id", "nombre_extra", "estado", "cantidad", "notas",
-        "usuario_id", "created_at",
+        "usuario_id", "created_at", "deleted_at",
     ),
     "inventario_turno": (
-        "id", "fecha", "turno", "observaciones", "usuario_id", "created_at",
+        "id", "fecha", "turno", "observaciones", "usuario_id", "created_at", "deleted_at",
     ),
+    "schema_migrations": ("version", "name", "applied_at"),
     "login_attempts": (
         "id", "ip_address", "attempted_at", "success",
     ),
@@ -539,3 +541,96 @@ def get_sqlite_connection(db_path: str):
     conn.execute("PRAGMA synchronous = FULL")
     conn.execute("PRAGMA busy_timeout = 30000")
     return conn
+
+
+# ── Sistema de migraciones ────────────────────────────────────────────────────
+
+_MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "migrations")
+_migrations_logger = logging.getLogger("contabilidad_morsa.migrations")
+
+
+def run_pending_migrations() -> list[str]:
+    """Ejecuta todas las migraciones SQL pendientes en orden.
+
+    - Crea la tabla schema_migrations si no existe.
+    - Lee archivos NNNN_descripcion.sql del directorio migrations/.
+    - Ejecuta solo los que no han sido aplicados todavía.
+    - Registra cada migración aplicada en schema_migrations.
+    - Lanza RuntimeError si alguna migración falla (bloquea el startup).
+    """
+    conn = get_pg_connection()
+    applied_versions: list[str] = []
+    try:
+        # Garantiza que la tabla de control exista antes de cualquier consulta
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version    INTEGER PRIMARY KEY,
+                name       TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS'))
+            )
+        """)
+
+        rows = conn.execute("SELECT version FROM schema_migrations").fetchall()
+        applied = {int(r[0]) for r in rows}
+
+        migrations_dir = os.path.abspath(_MIGRATIONS_DIR)
+        if not os.path.isdir(migrations_dir):
+            _migrations_logger.warning("Directorio de migraciones no encontrado: %s", migrations_dir)
+            return applied_versions
+
+        files = sorted(
+            f for f in os.listdir(migrations_dir) if f.endswith(".sql")
+        )
+
+        pending = []
+        for filename in files:
+            try:
+                version = int(filename.split("_")[0])
+            except (ValueError, IndexError):
+                _migrations_logger.warning("Nombre de migración inválido (se ignora): %s", filename)
+                continue
+            if version not in applied:
+                pending.append((version, filename))
+
+        if not pending:
+            _migrations_logger.info("Sin migraciones pendientes — esquema actualizado.")
+            return applied_versions
+
+        for version, filename in pending:
+            filepath = os.path.join(migrations_dir, filename)
+            _migrations_logger.info("Aplicando migración %04d: %s", version, filename)
+
+            with open(filepath, encoding="utf-8") as f:
+                sql = f.read()
+
+            # Ejecutar sentencia por sentencia (psycopg2 no acepta multi-statement)
+            statements = [s.strip() for s in sql.split(";") if s.strip()]
+            for stmt in statements:
+                # Ignorar bloques que son solo comentarios
+                non_comment = "\n".join(
+                    line for line in stmt.splitlines() if not line.strip().startswith("--")
+                ).strip()
+                if not non_comment:
+                    continue
+                try:
+                    conn.execute(stmt)
+                except Exception as exc:
+                    short = stmt[:300].replace("\n", " ")
+                    _migrations_logger.error(
+                        "Migración %04d falló en: %s\nError: %s", version, short, exc
+                    )
+                    raise RuntimeError(
+                        f"Migración {version} ({filename}) falló — revisa los logs para más detalles."
+                    ) from exc
+
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+                (version, filename),
+            )
+            applied_versions.append(filename)
+            _migrations_logger.info("Migración %04d aplicada correctamente.", version)
+
+    finally:
+        conn.close()
+
+    return applied_versions
