@@ -624,8 +624,9 @@ def run_pending_migrations() -> list[str]:
                     ) from exc
 
             from datetime import datetime as _dt
-            conn.execute(
-                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+            # Usar el cursor raw para evitar el RETURNING id que agrega el wrapper
+            conn._cur.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (%s, %s, %s)",
                 (version, filename, _dt.now().isoformat(timespec="seconds")),
             )
             applied_versions.append(filename)
