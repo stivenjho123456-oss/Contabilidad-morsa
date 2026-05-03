@@ -152,13 +152,12 @@ export function InventarioAdminView({ reload, setError, notify }) {
         <div className="toolbar-left">
           <h2>Inventario Diario</h2>
         </div>
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+        <div className="inv-admin-toolbar-actions">
           <input
             type="date"
             value={fecha}
             onChange={(e) => setFecha(e.target.value)}
-            className="fecha-input"
-            style={{ padding: "8px", borderRadius: "4px", border: "1px solid #ccc" }}
+            className="inv-admin-fecha-input"
           />
           {totalTraer > 0 && (
             <>
@@ -199,10 +198,8 @@ export function InventarioAdminView({ reload, setError, notify }) {
           </div>
         ) : (
           Object.entries(byCategoria).map(([categoria, items]) => (
-            <div key={categoria} style={{ marginBottom: "20px" }}>
-              <h3 style={{ borderBottom: "2px solid #1e3a5f", paddingBottom: "10px" }}>
-                {categoria}
-              </h3>
+            <div key={categoria} className="inv-admin-categoria">
+              <h3 className="inv-admin-cat-titulo">{categoria}</h3>
               <div className="inventory-table">
                 <div className="table-header">
                   <div>Insumo</div>
@@ -210,14 +207,16 @@ export function InventarioAdminView({ reload, setError, notify }) {
                   <div>Cantidad / Notas</div>
                 </div>
                 {items.map((item) => (
-                  <div key={item.id} className="table-row">
-                    <div>{item.nombre}</div>
-                    <div>
+                  <div key={item.id} className={`table-row ${item.estado === "traer" ? "table-row-traer" : ""}`}>
+                    <div data-label="Insumo" className="table-cell-nombre">{item.nombre}</div>
+                    <div data-label="Estado" className="table-cell-estado">
                       <span className={`badge ${item.estado === "hay" ? "badge-hay" : "badge-traer"}`}>
                         {item.estado === "hay" ? "Hay" : "Traer"}
                       </span>
                     </div>
-                    <div>{item.notas || (item.cantidad ? `${item.cantidad} ${item.unidad}` : "—")}</div>
+                    <div data-label="Notas" className="table-cell-notas">
+                      {item.notas || (item.cantidad ? `${item.cantidad} ${item.unidad}` : "—")}
+                    </div>
                   </div>
                 ))}
               </div>
