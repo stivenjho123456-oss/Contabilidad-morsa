@@ -18,7 +18,6 @@ h2, h3, h4 { margin: 0; }
 /* ── Layout ────────────────────────────────────────────────────────────────── */
 .app-shell {
   min-height: 100vh;
-  min-width: 1180px;
   display: grid;
   grid-template-columns: 240px 1fr;
 }
@@ -243,6 +242,111 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
 .health-chip { font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
 .health-chip.ok  { background: var(--color-success-deep); color: #86efac; }
 .health-chip.bad { background: #7f1d1d; color: var(--color-danger-border-md); }
+
+/* ── Sidebar overlay (backdrop para móvil) ─────────────────────────────────── */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.52);
+  z-index: 299;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+/* ── Sidebar close btn (solo móvil) ───────────────────────────────────────── */
+.sidebar-close-btn { display: none; }
+
+/* ── Mobile top bar (solo móvil) ──────────────────────────────────────────── */
+.mobile-bar { display: none; }
+.hamburger-btn {
+  background: transparent;
+  border: none;
+  color: white;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: var(--radius-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--ease-fast);
+}
+.hamburger-btn:hover { background: rgba(255,255,255,0.1); }
+.mobile-bar-title { font-size: var(--font-md); font-weight: 700; flex: 1; }
+
+/* ── Responsive sidebar ────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  /* Sidebar: sale del flujo y se convierte en panel lateral deslizable */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 300;
+    width: 260px;
+    height: 100%;
+    overflow-y: auto;
+    transform: translateX(-100%);
+    transition: transform 0.26s cubic-bezier(0.4, 0, 0.2, 1),
+                box-shadow 0.26s ease;
+  }
+  .sidebar--open {
+    transform: translateX(0);
+    box-shadow: 6px 0 32px rgba(0, 0, 0, 0.28);
+  }
+
+  /* Overlay visible cuando sidebar está abierto */
+  .sidebar-overlay {
+    display: block;
+  }
+  .sidebar-overlay--open {
+    opacity: 1;
+    pointer-events: all;
+  }
+
+  /* Botón de cierre dentro del sidebar */
+  .sidebar-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 28px;
+    height: 28px;
+    background: rgba(255,255,255,0.1);
+    border: none;
+    color: rgba(255,255,255,0.7);
+    border-radius: var(--radius-xs);
+    font-size: 14px;
+    cursor: pointer;
+    transition: background var(--ease-fast), color var(--ease-fast);
+  }
+  .sidebar-close-btn:hover { background: rgba(255,255,255,0.2); color: white; }
+
+  /* Barra superior móvil */
+  .mobile-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: -18px -18px 14px;
+    padding: 0 14px;
+    height: 52px;
+    background: var(--color-primary);
+    color: white;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  }
+
+  .workspace { min-height: 100vh; }
+}
 
 /* ── Workspace ─────────────────────────────────────────────────────────────── */
 .workspace { padding: 18px; display: flex; flex-direction: column; gap: 14px; min-height: 100vh; }

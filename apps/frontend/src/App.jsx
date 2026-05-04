@@ -478,6 +478,10 @@ function App() {
     }
   }
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  function closeSidebar() { setSidebarOpen(false); }
+
   if (authChecking) {
     return (
       <div className="auth-shell">
@@ -513,7 +517,15 @@ function App() {
   return (
     <div className="app-shell">
       <Toast notice={notice} onClose={() => setNotice(null)} />
-      <aside className="sidebar">
+
+      {/* Overlay — toca para cerrar sidebar en móvil */}
+      <div
+        className={`sidebar-overlay${sidebarOpen ? " sidebar-overlay--open" : ""}`}
+        onClick={closeSidebar}
+      />
+
+      <aside className={`sidebar${sidebarOpen ? " sidebar--open" : ""}`}>
+        <button className="sidebar-close-btn" onClick={closeSidebar} aria-label="Cerrar menú">✕</button>
         <div className="sidebar-brand">
           <h1>Contabilidad<br />Morsa</h1>
           <p>Control mensual de ingresos,<br />egresos y proveedores</p>
@@ -523,7 +535,7 @@ function App() {
             <button
               key={item.key}
               className={`nav-link${activeView === item.key ? " active" : ""}`}
-              onClick={() => setActiveView(item.key)}
+              onClick={() => { setActiveView(item.key); closeSidebar(); }}
             >
               {item.label}
             </button>
@@ -550,6 +562,21 @@ function App() {
       </aside>
 
       <main className="workspace">
+        {/* Barra superior — visible solo en móvil */}
+        <div className="mobile-bar">
+          <button className="hamburger-btn" onClick={() => setSidebarOpen(true)} aria-label="Abrir menú">
+            <svg width="20" height="16" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true">
+              <rect y="0"  width="20" height="2" rx="1"/>
+              <rect y="7"  width="20" height="2" rx="1"/>
+              <rect y="14" width="20" height="2" rx="1"/>
+            </svg>
+          </button>
+          <strong className="mobile-bar-title">Contabilidad Morsa</strong>
+          <span className={`health-chip ${dbHealthy ? "ok" : "bad"}`}>
+            {dbHealthy ? "●" : "✕"}
+          </span>
+        </div>
+
         {showRefreshingHint && <div className="loading-inline">Actualizando datos...</div>}
         {!loading && dbHealthKnown && !dbHealthy && (
           <div className="system-banner system-banner-bad">
