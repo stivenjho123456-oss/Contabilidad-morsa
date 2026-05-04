@@ -139,6 +139,13 @@ def _clean_text(value):
     return (value or '').strip()
 
 
+def _normalize_inventory_name(value):
+    text = _clean_text(value)
+    if not text:
+        return text
+    return re.sub(r'\bmayone[sz]a\b', 'mayo', text, flags=re.IGNORECASE)
+
+
 def _json_dump(value):
     return json.dumps(value, ensure_ascii=False, default=str)
 
@@ -2757,7 +2764,12 @@ def get_insumos():
     conn = get_connection()
     rows = conn.execute('SELECT * FROM insumos WHERE activo=1 ORDER BY categoria, nombre').fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item['nombre'] = _normalize_inventory_name(item.get('nombre'))
+        result.append(item)
+    return result
 
 
 def get_inventario_diario(fecha, turno=1):
@@ -2774,7 +2786,13 @@ def get_inventario_diario(fecha, turno=1):
         (fecha, turno)
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item['nombre'] = _normalize_inventory_name(item.get('nombre'))
+        item['nombre_extra'] = _normalize_inventory_name(item.get('nombre_extra'))
+        result.append(item)
+    return result
 
 
 def get_turnos_del_dia(fecha):
@@ -2807,7 +2825,7 @@ def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None, tu
         )
         for item in items:
             insumo_id = item.get('insumo_id')
-            nombre_extra = (item.get('nombre_extra') or '').strip() or None
+            nombre_extra = _normalize_inventory_name(item.get('nombre_extra')) or None
             estado = item.get('estado')
             cantidad = item.get('cantidad')
             notas = item.get('notas')
