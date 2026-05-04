@@ -1,0 +1,94 @@
+/* ── Design tokens — La Morsa ──────────────────────────────────────────────
+   Fuente única de verdad para colores, tipografía, radios y sombras.
+   Importado al inicio de App.css; usado en toda la app vía var(--nombre).
+────────────────────────────────────────────────────────────────────────── */
+:root {
+
+  /* ── Paleta de marca (navy) ── */
+  --color-primary:       #1e3a5f;   /* azul marino principal */
+  --color-primary-dark:  #10253b;   /* sidebar fondo oscuro  */
+  --color-primary-mid:   #173553;   /* hover / gradiente     */
+  --color-primary-grad:  #2a5298;   /* extremo claro gradient*/
+  --color-primary-tint:  #f0f6ff;   /* superficie azul claro */
+
+  /* ── Acentos ── */
+  --color-accent:        #2563eb;   /* azul botones / focus  */
+  --color-accent-dark:   #1d4ed8;   /* azul botón activo     */
+
+  /* ── Semánticos ── */
+  --color-success:       #15803d;
+  --color-success-light: #16a34a;
+  --color-danger:        #dc2626;
+  --color-danger-dark:   #b91c1c;
+  --color-danger-alt:    #e74c3c;   /* variante antigua (rojo Flat UI) */
+  --color-warning:       #f59e0b;
+  --color-purple:        #7c3aed;
+
+  /* ── Texto ── */
+  --color-text:          #1f2937;
+  --color-text-heading:  #14213d;
+  --color-text-mid:      #334155;
+  --color-text-muted:    #64748b;
+  --color-text-faint:    #94a3b8;
+
+  /* ── Bordes ── */
+  --color-border:        #e2e8f0;
+  --color-border-mid:    #d5deeb;
+  --color-border-light:  #eef3f8;
+
+  /* ── Superficies ── */
+  --color-surface:       #f8fafc;
+  --color-surface-blue:  #f8faff;
+
+  /* ── Superficies de estado ── */
+  --color-danger-surface:   #fef2f2;   /* fondo rojo muy claro  */
+  --color-danger-border:    #fecaca;   /* borde rojo claro      */
+  --color-danger-border-md: #fca5a5;   /* borde rojo medio      */
+  --color-danger-text:      #991b1b;   /* texto rojo oscuro     */
+  --color-danger-deep:      #14532d;   /* texto rojo muy oscuro (uso: .badge) - reutiliza green para badge-hay */
+  --color-success-surface:  #f0fdf4;   /* fondo verde muy claro */
+  --color-success-deep:     #14532d;   /* texto verde oscuro    */
+  --color-accent-surface:   #eff6ff;   /* fondo azul muy claro  */
+  --color-accent-tint:      #dbeafe;   /* azul para selección   */
+  --color-neutral-surface:  #f1f5f9;   /* gris muy claro        */
+  --color-neutral-border:   #e5e7eb;   /* borde neutro (mobile) */
+  --color-neutral-mid:      #6b7280;   /* texto gris medio      */
+  --color-neutral-dark:     #374151;   /* texto gris oscuro     */
+
+  /* ── Gradientes ── */
+  --grad-sidebar:  linear-gradient(180deg, #10253b 0%, #173553 100%);
+  --grad-navy:     linear-gradient(135deg, #1e3a5f, #2a5298);
+  --grad-auth-bg:  linear-gradient(180deg, #edf3f9 0%, #e4edf7 100%);
+  --grad-page-bg:  linear-gradient(180deg, #f6f7fb 0%, #eaf1f8 100%);
+
+  /* ── Tipografía ── */
+  --font-2xs:  0.72rem;     /* ~11.5px — etiquetas ínfimas        */
+  --font-xs:   0.75rem;     /* ~12px   — badges, notas de pie     */
+  --font-sm:   0.8125rem;   /* ~13px   — texto de apoyo           */
+  --font-base: 0.875rem;    /* ~14px   — cuerpo de tabla/formulario*/
+  --font-md:   0.9375rem;   /* ~15px   — texto de interfaz        */
+  --font-lg:   1rem;        /* ~16px   — títulos de sección       */
+  --font-xl:   1.125rem;    /* ~18px   — subtítulos               */
+  --font-2xl:  1.5rem;      /* ~24px   — títulos de módulo        */
+  --font-3xl:  2rem;        /* ~32px   — display / hero           */
+
+  /* ── Border radius ── */
+  --radius-xs:   6px;
+  --radius-sm:   8px;
+  --radius-md:   10px;
+  --radius-lg:   12px;
+  --radius-xl:   14px;
+  --radius-2xl:  20px;
+  --radius-pill: 9999px;
+
+  /* ── Sombras ── */
+  --shadow-card:  0 2px 10px rgba(15, 23, 42, 0.06);
+  --shadow-card-sm: 0 1px 4px rgba(0, 0, 0, 0.07);
+  --shadow-modal: 0 20px 60px rgba(15, 23, 42, 0.25);
+  --shadow-toast: 0 8px 32px rgba(0, 0, 0, 0.28);
+  --shadow-btn-accent: 0 10px 24px rgba(37, 99, 235, 0.24);
+
+  /* ── Transiciones estándar ── */
+  --ease-fast:  0.12s ease;
+  --ease-std:   0.2s ease;
+}
