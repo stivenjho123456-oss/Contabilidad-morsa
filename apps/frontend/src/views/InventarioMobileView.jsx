@@ -12,6 +12,7 @@ export function InventarioMobileView({ session, setError, notify }) {
   const [observaciones, setObservaciones] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [cargando, setCargando] = useState(true);
+  const [cargandoRegistro, setCargandoRegistro] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [modificados, setModificados] = useState(new Set());
 
@@ -58,6 +59,7 @@ export function InventarioMobileView({ session, setError, notify }) {
 
   async function cargarRegistro() {
     try {
+      setCargandoRegistro(true);
       const data = await request(`/api/inventario?fecha=${fecha}&turno=${turno}`);
       const reg = {};
       data.forEach((item) => {
@@ -66,6 +68,8 @@ export function InventarioMobileView({ session, setError, notify }) {
       setRegistro(reg);
     } catch {
       setRegistro({});
+    } finally {
+      setCargandoRegistro(false);
     }
   }
 
@@ -95,6 +99,10 @@ export function InventarioMobileView({ session, setError, notify }) {
   async function guardar() {
     try {
       setGuardando(true);
+      if (cargando || cargandoRegistro) {
+        setError("Espera a que termine de cargar el inventario antes de guardar.");
+        return;
+      }
       const idsConRegistroPrevio = new Set(Object.keys(registro).map(Number));
       const items = insumos
         .filter((ins) => modificados.has(ins.id) || idsConRegistroPrevio.has(ins.id))
@@ -117,6 +125,12 @@ export function InventarioMobileView({ session, setError, notify }) {
           cantidad: null,
           notas: e.notas || null,
         }));
+
+      const totalItems = items.length + extrasValidos.length;
+      if (totalItems === 0) {
+        setError("No hay elementos para guardar. Marca al menos un insumo antes de guardar.");
+        return;
+      }
 
       await request("/api/inventario", {
         method: "POST",
@@ -384,8 +398,8 @@ export function InventarioMobileView({ session, setError, notify }) {
 
       {/* Botón guardar */}
       <div className="inv-footer">
-        <button className="inv-btn-guardar" onClick={guardar} disabled={guardando}>
-          {guardando ? "Guardando..." : `✓ Guardar Turno ${turno} — ${formatFechaDisplay(fecha)}`}
+        <button className="inv-btn-guardar" onClick={guardar} disabled={guardando || cargandoRegistro}>
+          {guardando ? "Guardando..." : cargandoRegistro ? "Cargando datos..." : `✓ Guardar Turno ${turno} — ${formatFechaDisplay(fecha)}`}
         </button>
       </div>
     </div>

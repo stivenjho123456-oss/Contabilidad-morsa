@@ -2781,9 +2781,14 @@ def get_inventario_diario(fecha, turno=1):
            FROM inventario_diario inv
            LEFT JOIN insumos ins ON inv.insumo_id = ins.id
            WHERE inv.fecha = ? AND inv.turno = ? AND inv.deleted_at IS NULL
+             AND inv.version = (
+                 SELECT COALESCE(MAX(version), 0)
+                 FROM inventario_diario
+                 WHERE fecha = ? AND turno = ? AND deleted_at IS NULL
+             )
            ORDER BY CASE WHEN ins.categoria IS NULL THEN 1 ELSE 0 END,
                     ins.categoria, COALESCE(ins.nombre, inv.nombre_extra)''',
-        (fecha, turno)
+        (fecha, turno, fecha, turno)
     ).fetchall()
     conn.close()
     result = []
@@ -2804,10 +2809,20 @@ def get_turnos_del_dia(fecha):
            FROM inventario_turno t
            LEFT JOIN inventario_diario d
                   ON d.fecha = t.fecha AND d.turno = t.turno AND d.deleted_at IS NULL
+                  AND d.version = (
+                      SELECT COALESCE(MAX(version), 0)
+                      FROM inventario_diario
+                      WHERE fecha = t.fecha AND turno = t.turno AND deleted_at IS NULL
+                  )
            WHERE t.fecha = ? AND t.deleted_at IS NULL
+             AND t.version = (
+                 SELECT COALESCE(MAX(version), 0)
+                 FROM inventario_turno
+                 WHERE fecha = ? AND turno = t.turno AND deleted_at IS NULL
+             )
            GROUP BY t.turno, t.observaciones, t.created_at
            ORDER BY t.turno''',
-        (fecha,)
+        (fecha, fecha)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -2815,14 +2830,19 @@ def get_turnos_del_dia(fecha):
 
 @serialized_write
 def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None, turno=1):
+    if not items:
+        raise AppValidationError('No se puede guardar un inventario vacío. Marca al menos un insumo.')
     conn = get_connection()
     try:
         now = datetime.now().isoformat()
-        # Soft delete: marcar registros anteriores del mismo turno como eliminados
-        conn.execute(
-            'UPDATE inventario_diario SET deleted_at=? WHERE fecha=? AND turno=? AND deleted_at IS NULL',
-            (now, fecha, turno)
-        )
+
+        # Calcular siguiente versión para ítems
+        row = conn.execute(
+            'SELECT COALESCE(MAX(version), 0) FROM inventario_diario WHERE fecha=? AND turno=? AND deleted_at IS NULL',
+            (fecha, turno)
+        ).fetchone()
+        next_version = (row[0] or 0) + 1
+
         for item in items:
             insumo_id = item.get('insumo_id')
             nombre_extra = _normalize_inventory_name(item.get('nombre_extra')) or None
@@ -2832,22 +2852,27 @@ def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None, tu
             if not (insumo_id or nombre_extra) or not estado:
                 raise AppValidationError('Cada item debe tener insumo_id o nombre_extra, y estado.')
             conn.execute(
-                '''INSERT INTO inventario_diario (fecha, turno, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                (fecha, turno, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, now)
+                '''INSERT INTO inventario_diario (fecha, turno, version, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (fecha, turno, next_version, insumo_id, nombre_extra, estado, cantidad, notas, usuario_id, now)
             )
-        # Soft delete del turno anterior y crear nuevo
+
+        # Calcular siguiente versión para el turno
+        row2 = conn.execute(
+            'SELECT COALESCE(MAX(version), 0) FROM inventario_turno WHERE fecha=? AND turno=? AND deleted_at IS NULL',
+            (fecha, turno)
+        ).fetchone()
+        next_turno_version = (row2[0] or 0) + 1
+
         conn.execute(
-            'UPDATE inventario_turno SET deleted_at=? WHERE fecha=? AND turno=? AND deleted_at IS NULL',
-            (now, fecha, turno)
-        )
-        conn.execute(
-            '''INSERT INTO inventario_turno (fecha, turno, observaciones, usuario_id, created_at)
-               VALUES (?, ?, ?, ?, ?)''',
-            (fecha, turno, observaciones, usuario_id, now)
+            '''INSERT INTO inventario_turno (fecha, turno, version, observaciones, usuario_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (fecha, turno, next_turno_version, observaciones, usuario_id, now)
         )
         conn.commit()
-        log_auditoria('inventario_diario', 'SAVE', 0, fecha, f'Inventario del {fecha} turno {turno}', {'items': len(items), 'turno': turno})
+        log_auditoria('inventario_diario', 'SAVE', 0, fecha,
+                      f'Inventario del {fecha} turno {turno} v{next_version}',
+                      {'items': len(items), 'turno': turno, 'version': next_version})
     except Exception:
         conn.rollback()
         raise

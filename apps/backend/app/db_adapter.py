@@ -77,11 +77,11 @@ REQUIRED_PG_SCHEMA: dict[str, tuple[str, ...]] = {
         "id", "nombre", "categoria", "unidad", "activo", "orden", "created_at",
     ),
     "inventario_diario": (
-        "id", "fecha", "turno", "insumo_id", "nombre_extra", "estado", "cantidad", "notas",
+        "id", "fecha", "turno", "version", "insumo_id", "nombre_extra", "estado", "cantidad", "notas",
         "usuario_id", "created_at", "deleted_at",
     ),
     "inventario_turno": (
-        "id", "fecha", "turno", "observaciones", "usuario_id", "created_at", "deleted_at",
+        "id", "fecha", "turno", "version", "observaciones", "usuario_id", "created_at", "deleted_at",
     ),
     "schema_migrations": ("version", "name", "applied_at"),
     "login_attempts": (
