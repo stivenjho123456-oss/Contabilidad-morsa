@@ -2772,6 +2772,19 @@ def get_insumos():
     return result
 
 
+def get_ultimo_inventario():
+    conn = get_connection()
+    row = conn.execute(
+        '''SELECT fecha, turno, created_at
+           FROM inventario_turno
+           WHERE deleted_at IS NULL
+           ORDER BY created_at DESC
+           LIMIT 1'''
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def get_inventario_diario(fecha, turno=1):
     conn = get_connection()
     rows = conn.execute(

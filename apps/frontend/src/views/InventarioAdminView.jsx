@@ -10,12 +10,27 @@ export function InventarioAdminView({ reload, setError, notify }) {
   const [cargando, setCargando] = useState(true);
 
   useEffect(() => {
+    cargarUltimoInventario();
+  }, []);
+
+  useEffect(() => {
     cargarTurnos();
   }, [fecha]);
 
   useEffect(() => {
     cargarRegistro();
   }, [fecha, turno]);
+
+  async function cargarUltimoInventario() {
+    try {
+      const data = await request("/api/inventario/ultimo");
+      if (data?.fecha) {
+        setFecha(data.fecha);
+      }
+    } catch {
+      // fallback: se queda en la fecha de hoy
+    }
+  }
 
   async function cargarTurnos() {
     try {

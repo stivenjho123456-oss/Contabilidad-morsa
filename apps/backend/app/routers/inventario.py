@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from starlette.requests import Request
 
-from database import get_insumos, get_inventario_diario, get_turnos_del_dia, save_inventario_diario
+from database import get_insumos, get_inventario_diario, get_turnos_del_dia, get_ultimo_inventario, save_inventario_diario
 from routers.utils import api_ok, handle_validation
 
 router = APIRouter(prefix="/api", tags=["inventario"])
@@ -28,6 +28,11 @@ class InventarioGuardarPayload(BaseModel):
 @router.get("/insumos")
 def get_insumos_list():
     return api_ok(get_insumos())
+
+
+@router.get("/inventario/ultimo")
+def get_ultimo():
+    return api_ok(get_ultimo_inventario())
 
 
 @router.get("/inventario/turnos")
