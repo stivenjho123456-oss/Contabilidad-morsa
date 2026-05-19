@@ -2816,7 +2816,9 @@ def get_inventario_diario(fecha, turno=1):
 def get_turnos_del_dia(fecha):
     conn = get_connection()
     rows = conn.execute(
-        '''SELECT t.turno, t.observaciones, t.created_at,
+        '''SELECT t.turno,
+                  MAX(t.observaciones) AS observaciones,
+                  MAX(t.created_at) AS created_at,
                   COUNT(d.id) AS total_items,
                   SUM(CASE WHEN d.estado = 'traer' THEN 1 ELSE 0 END) AS items_traer
            FROM inventario_turno t
@@ -2833,7 +2835,7 @@ def get_turnos_del_dia(fecha):
                  FROM inventario_turno
                  WHERE fecha = ? AND turno = t.turno AND deleted_at IS NULL
              )
-           GROUP BY t.turno, t.observaciones, t.created_at
+           GROUP BY t.turno
            ORDER BY t.turno''',
         (fecha, fecha)
     ).fetchall()

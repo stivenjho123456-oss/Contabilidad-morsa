@@ -101,6 +101,7 @@ export function InventarioMobileView({ session, setError, notify }) {
       setGuardando(true);
       if (cargando || cargandoRegistro) {
         setError("Espera a que termine de cargar el inventario antes de guardar.");
+        setGuardando(false);
         return;
       }
       const idsConRegistroPrevio = new Set(Object.keys(registro).map(Number));
@@ -129,6 +130,7 @@ export function InventarioMobileView({ session, setError, notify }) {
       const totalItems = items.length + extrasValidos.length;
       if (totalItems === 0) {
         setError("No hay elementos para guardar. Marca al menos un insumo antes de guardar.");
+        setGuardando(false);
         return;
       }
 
