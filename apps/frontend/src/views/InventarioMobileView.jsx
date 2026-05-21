@@ -1,8 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { request } from "../lib/api";
 
+// ─── Borrador local (localStorage) ───────────────────────────────────────────
+
+function _draftKey(fecha, turno) {
+  return `morsa_inv_draft_${fecha}_t${turno}`;
+}
+
+function guardarBorrador(fecha, turno, registro, extras, observaciones) {
+  try {
+    localStorage.setItem(_draftKey(fecha, turno), JSON.stringify({
+      registro, extras, observaciones, ts: Date.now(),
+    }));
+  } catch { /* storage lleno o bloqueado */ }
+}
+
+function cargarBorrador(fecha, turno) {
+  try {
+    const raw = localStorage.getItem(_draftKey(fecha, turno));
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function borrarBorrador(fecha, turno) {
+  try { localStorage.removeItem(_draftKey(fecha, turno)); } catch {}
+}
+
+function formatHora(date) {
+  return date.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
+}
+
+// ─── Componente ──────────────────────────────────────────────────────────────
+
 export function InventarioMobileView({ session, setError, notify, onLogout }) {
-  const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD en hora local
+  const today = new Date().toLocaleDateString("en-CA");
   const [fecha, setFecha] = useState(today);
   const [turno, setTurno] = useState(1);
   const [turnosDelDia, setTurnosDelDia] = useState([]);
@@ -15,19 +46,62 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
   const [cargandoRegistro, setCargandoRegistro] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [modificados, setModificados] = useState(new Set());
+  const [extrasDirty, setExtrasDirty] = useState(false);
+  const [obsDirty, setObsDirty] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const [borradorLocal, setBorradorLocal] = useState(null);
+
+  const hayPendientes = modificados.size > 0 || extrasDirty || obsDirty;
+
+  // Ref para auto-save: siempre apunta a la versión más reciente de guardar
+  const guardarRef = useRef(null);
+
+  // ── Effects ────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     setModificados(new Set());
+    setExtrasDirty(false);
+    setObsDirty(false);
     cargarInsumos();
     cargarTurnos();
   }, [fecha]);
 
   useEffect(() => {
     setModificados(new Set());
+    setExtrasDirty(false);
+    setObsDirty(false);
     setExtras([]);
     setObservaciones("");
     cargarRegistro();
   }, [fecha, turno]);
+
+  // Protección 1 — Borrador local: guarda en localStorage en cada cambio pendiente
+  useEffect(() => {
+    if (!hayPendientes) return;
+    guardarBorrador(fecha, turno, registro, extras, observaciones);
+  }, [registro, extras, observaciones, hayPendientes]);
+
+  // Protección 2 — Advertencia al cerrar/salir de la pestaña con cambios sin guardar
+  useEffect(() => {
+    function handleBeforeUnload(e) {
+      if (!hayPendientes) return;
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hayPendientes]);
+
+  // Protección 3 — Auto-guardado al servidor cada 2 minutos si hay cambios
+  useEffect(() => {
+    if (!hayPendientes) return;
+    const id = setInterval(() => {
+      guardarRef.current?.({ silencioso: true });
+    }, 2 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [hayPendientes]);
+
+  // ── Carga de datos ─────────────────────────────────────────────────────────
 
   async function cargarInsumos() {
     try {
@@ -45,7 +119,6 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
     try {
       const data = await request(`/api/inventario/turnos?fecha=${fecha}`);
       setTurnosDelDia(data);
-      // Si hay turnos existentes, cargar el último; si no, empezar en 1
       if (data.length > 0) {
         setTurno(data[data.length - 1].turno);
       } else {
@@ -63,24 +136,55 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
       const data = await request(`/api/inventario?fecha=${fecha}&turno=${turno}`);
       const reg = {};
       const loadedExtras = [];
+      let serverTs = 0;
       data.forEach((item) => {
         if (item.insumo_id !== null && item.insumo_id !== undefined) {
           reg[item.insumo_id] = item;
         } else if (item.nombre_extra) {
           loadedExtras.push({ nombre: item.nombre_extra, notas: item.notas || "" });
         }
+        if (item.created_at) {
+          const t = new Date(item.created_at).getTime();
+          if (t > serverTs) serverTs = t;
+        }
       });
       setRegistro(reg);
       setExtras(loadedExtras);
+
+      // Ofrecer restaurar borrador si es más reciente que lo que hay en el servidor
+      const draft = cargarBorrador(fecha, turno);
+      setBorradorLocal(draft && draft.ts > serverTs ? draft : null);
     } catch (err) {
       setError(err.message);
       setRegistro({});
+      // Si el servidor falló, ofrecer igualmente el borrador local
+      const draft = cargarBorrador(fecha, turno);
+      if (draft) setBorradorLocal(draft);
     } finally {
       setCargandoRegistro(false);
     }
   }
 
+  // ── Acciones ───────────────────────────────────────────────────────────────
+
+  // Protección 4 — Confirmar antes de cambiar fecha/turno si hay cambios sin guardar
+  function confirmarSiHayPendientes(mensaje) {
+    if (!hayPendientes) return true;
+    return window.confirm(`${mensaje}\n\n¿Continuar sin guardar?`);
+  }
+
+  function cambiarFecha(nuevaFecha) {
+    if (!confirmarSiHayPendientes("Hay cambios sin guardar en este turno.")) return;
+    setFecha(nuevaFecha);
+  }
+
+  function cambiarTurno(nuevoTurno) {
+    if (!confirmarSiHayPendientes("Hay cambios sin guardar en este turno.")) return;
+    setTurno(nuevoTurno);
+  }
+
   function iniciarNuevoTurno() {
+    if (!confirmarSiHayPendientes("Hay cambios sin guardar en este turno.")) return;
     const proximo = turnosDelDia.length > 0
       ? Math.max(...turnosDelDia.map((t) => t.turno)) + 1
       : 1;
@@ -89,21 +193,42 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
     setExtras([]);
     setObservaciones("");
     setModificados(new Set());
+    setExtrasDirty(false);
+    setObsDirty(false);
+  }
+
+  function restaurarBorrador(draft) {
+    setRegistro(draft.registro || {});
+    setExtras(draft.extras || []);
+    setObservaciones(draft.observaciones || "");
+    const ids = Object.keys(draft.registro || {}).map(Number).filter((n) => !isNaN(n));
+    setModificados(new Set(ids));
+    setExtrasDirty((draft.extras || []).length > 0);
+    setObsDirty(!!(draft.observaciones || "").trim());
+    setBorradorLocal(null);
+  }
+
+  function descartarBorrador() {
+    borrarBorrador(fecha, turno);
+    setBorradorLocal(null);
   }
 
   function agregarExtra() {
     setExtras((cur) => [...cur, { nombre: "", notas: "" }]);
+    setExtrasDirty(true);
   }
 
   function actualizarExtra(idx, campo, valor) {
     setExtras((cur) => cur.map((e, i) => i === idx ? { ...e, [campo]: valor } : e));
+    setExtrasDirty(true);
   }
 
   function eliminarExtra(idx) {
     setExtras((cur) => cur.filter((_, i) => i !== idx));
+    setExtrasDirty(true);
   }
 
-  async function guardar() {
+  async function guardar({ silencioso = false } = {}) {
     try {
       setGuardando(true);
       if (cargando || cargandoRegistro) {
@@ -150,8 +275,15 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
           observaciones: observaciones.trim() || null,
         }),
       });
-      notify(`Turno ${turno} guardado correctamente`, "success");
-      // Actualizar lista de turnos
+
+      // Éxito — limpiar estado pendiente y borrador local
+      setModificados(new Set());
+      setExtrasDirty(false);
+      setObsDirty(false);
+      setLastSavedAt(new Date());
+      borrarBorrador(fecha, turno);
+
+      if (!silencioso) notify(`Turno ${turno} guardado correctamente`, "success");
       await cargarTurnos();
     } catch (err) {
       setError(err.message);
@@ -159,6 +291,11 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
       setGuardando(false);
     }
   }
+
+  // Actualizar ref en cada render para que el auto-save use el guardar más reciente
+  guardarRef.current = guardar;
+
+  // ── Helpers de presentación ───────────────────────────────────────────────
 
   function formatFechaDisplay(fechaStr) {
     const [year, month, day] = fechaStr.split("-");
@@ -180,7 +317,6 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
   const totalItems = insumos.length;
   const itemsTraer = insumos.filter((ins) => registro[ins.id]?.estado === "traer").length;
   const itemsHay = insumos.filter((ins) => !registro[ins.id] || registro[ins.id]?.estado === "hay").length;
-
   const esNuevoTurno = !turnosDelDia.some((t) => t.turno === turno);
 
   if (cargando) {
@@ -193,7 +329,7 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
 
   return (
     <div className="inv-root">
-      {/* Header tipo formulario */}
+      {/* Header */}
       <div className="inv-header">
         <div className="inv-header-top">
           <div className="inv-logo">📋</div>
@@ -201,12 +337,28 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
             <h1 className="inv-title">Control de Inventario</h1>
             <p className="inv-subtitle">Turno diario de cocina</p>
           </div>
+          {/* Protección 5 — Indicador visible de cambios sin guardar */}
+          {hayPendientes && (
+            <span className="inv-pendientes-badge">● Sin guardar</span>
+          )}
           {onLogout && (
             <button className="inv-logout-btn" onClick={onLogout} title="Cerrar sesión">
               Salir
             </button>
           )}
         </div>
+
+        {/* Protección 1b — Banner de borrador local disponible */}
+        {borradorLocal && (
+          <div className="inv-borrador-banner">
+            <span>Borrador del {new Date(borradorLocal.ts).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })} — no se guardó al servidor.</span>
+            <div className="inv-borrador-actions">
+              <button className="inv-borrador-btn inv-borrador-restore" onClick={() => restaurarBorrador(borradorLocal)}>Restaurar</button>
+              <button className="inv-borrador-btn inv-borrador-discard" onClick={descartarBorrador}>Descartar</button>
+            </div>
+          </div>
+        )}
+
         <div className="inv-fecha-row">
           <span className="inv-fecha-label">Fecha:</span>
           <label className="inv-fecha-display" htmlFor="inv-fecha-input">
@@ -216,7 +368,7 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
             id="inv-fecha-input"
             type="date"
             value={fecha}
-            onChange={(e) => setFecha(e.target.value)}
+            onChange={(e) => cambiarFecha(e.target.value)}
             className="inv-fecha-input"
           />
         </div>
@@ -228,7 +380,7 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
               <button
                 key={t.turno}
                 className={`inv-turno-tab ${turno === t.turno && !esNuevoTurno ? "inv-turno-tab-activo" : ""}`}
-                onClick={() => setTurno(t.turno)}
+                onClick={() => cambiarTurno(t.turno)}
               >
                 Turno {t.turno}
                 {t.items_traer > 0 && (
@@ -405,16 +557,22 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
           className="inv-obs-textarea"
           placeholder="Ej: La nevera está haciendo ruido, falta limpiar el extractor, llegó pedido incompleto..."
           value={observaciones}
-          onChange={(e) => setObservaciones(e.target.value)}
+          onChange={(e) => {
+            setObservaciones(e.target.value);
+            setObsDirty(true);
+          }}
           rows={3}
         />
       </div>
 
-      {/* Botón guardar */}
+      {/* Botón guardar + Protección 6 — timestamp del último guardado */}
       <div className="inv-footer">
-        <button className="inv-btn-guardar" onClick={guardar} disabled={guardando || cargandoRegistro}>
+        <button className="inv-btn-guardar" onClick={() => guardar()} disabled={guardando || cargandoRegistro}>
           {guardando ? "Guardando..." : cargandoRegistro ? "Cargando datos..." : `✓ Guardar Turno ${turno} — ${formatFechaDisplay(fecha)}`}
         </button>
+        {lastSavedAt && !hayPendientes && (
+          <p className="inv-last-saved">Guardado a las {formatHora(lastSavedAt)}</p>
+        )}
       </div>
     </div>
   );
