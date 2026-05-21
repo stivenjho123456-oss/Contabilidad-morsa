@@ -509,7 +509,7 @@ function App() {
     return (
       <>
         <Toast notice={notice} onClose={() => setNotice(null)} />
-        <InventarioMobileView session={authSession} setError={setError} notify={notify} />
+        <InventarioMobileView session={authSession} setError={setError} notify={notify} onLogout={handleLogout} />
       </>
     );
   }

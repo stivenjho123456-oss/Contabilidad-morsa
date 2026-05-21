@@ -1752,6 +1752,18 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
   gap: 12px;
   margin-bottom: 14px;
 }
+.inv-logout-btn {
+  margin-left: auto;
+  padding: 6px 14px;
+  border: 1px solid rgba(255,255,255,0.4);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.inv-logout-btn:hover { opacity: 1; background: rgba(255,255,255,0.15); }
 .inv-logo { font-size: 28px; }
 .inv-title {
   margin: 0;

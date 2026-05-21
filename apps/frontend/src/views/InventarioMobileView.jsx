@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { request } from "../lib/api";
 
-export function InventarioMobileView({ session, setError, notify }) {
+export function InventarioMobileView({ session, setError, notify, onLogout }) {
   const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD en hora local
   const [fecha, setFecha] = useState(today);
   const [turno, setTurno] = useState(1);
@@ -62,11 +62,18 @@ export function InventarioMobileView({ session, setError, notify }) {
       setCargandoRegistro(true);
       const data = await request(`/api/inventario?fecha=${fecha}&turno=${turno}`);
       const reg = {};
+      const loadedExtras = [];
       data.forEach((item) => {
-        reg[item.insumo_id] = item;
+        if (item.insumo_id !== null && item.insumo_id !== undefined) {
+          reg[item.insumo_id] = item;
+        } else if (item.nombre_extra) {
+          loadedExtras.push({ nombre: item.nombre_extra, notas: item.notas || "" });
+        }
       });
       setRegistro(reg);
-    } catch {
+      setExtras(loadedExtras);
+    } catch (err) {
+      setError(err.message);
       setRegistro({});
     } finally {
       setCargandoRegistro(false);
@@ -194,6 +201,11 @@ export function InventarioMobileView({ session, setError, notify }) {
             <h1 className="inv-title">Control de Inventario</h1>
             <p className="inv-subtitle">Turno diario de cocina</p>
           </div>
+          {onLogout && (
+            <button className="inv-logout-btn" onClick={onLogout} title="Cerrar sesión">
+              Salir
+            </button>
+          )}
         </div>
         <div className="inv-fecha-row">
           <span className="inv-fecha-label">Fecha:</span>
