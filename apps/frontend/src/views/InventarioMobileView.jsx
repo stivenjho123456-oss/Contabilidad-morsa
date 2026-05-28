@@ -50,6 +50,7 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
   const [obsDirty, setObsDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [borradorLocal, setBorradorLocal] = useState(null);
+  const [confirmacion, setConfirmacion] = useState(null);
 
   const hayPendientes = modificados.size > 0 || extrasDirty || obsDirty;
 
@@ -74,6 +75,13 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
     setObservaciones("");
     cargarRegistro();
   }, [fecha, turno]);
+
+  // Auto-cerrar pantalla de confirmación después de 6 segundos
+  useEffect(() => {
+    if (!confirmacion) return;
+    const id = setTimeout(() => setConfirmacion(null), 6000);
+    return () => clearTimeout(id);
+  }, [confirmacion]);
 
   // Protección 1 — Borrador local: guarda en localStorage en cada cambio pendiente
   useEffect(() => {
@@ -280,10 +288,27 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
       setModificados(new Set());
       setExtrasDirty(false);
       setObsDirty(false);
-      setLastSavedAt(new Date());
+      const savedAt = new Date();
+      setLastSavedAt(savedAt);
       borrarBorrador(fecha, turno);
 
-      if (!silencioso) notify(`Turno ${turno} guardado correctamente`, "success");
+      // Verificar contra el servidor y mostrar confirmación
+      if (!silencioso) {
+        try {
+          const verificado = await request(`/api/inventario?fecha=${fecha}&turno=${turno}`);
+          const traerItems = verificado.filter((i) => i.estado === "traer");
+          setConfirmacion({
+            turno,
+            fecha,
+            hora: savedAt,
+            totalRegistrado: verificado.length,
+            traer: traerItems.map((i) => i.nombre || i.nombre_extra).filter(Boolean),
+          });
+        } catch {
+          // Si falla la verificación igual mostramos el toast de éxito
+          notify(`Turno ${turno} guardado correctamente`, "success");
+        }
+      }
       await cargarTurnos();
     } catch (err) {
       setError(err.message);
@@ -323,6 +348,46 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
     return (
       <div className="inv-loading">
         <div className="inv-loading-inner">Cargando inventario...</div>
+      </div>
+    );
+  }
+
+  if (confirmacion) {
+    return (
+      <div className="inv-confirm-overlay" onClick={() => setConfirmacion(null)}>
+        <div className="inv-confirm-card" onClick={(e) => e.stopPropagation()}>
+          <div className="inv-confirm-check">✓</div>
+          <h2 className="inv-confirm-titulo">Inventario enviado</h2>
+          <p className="inv-confirm-subtitulo">
+            Turno {confirmacion.turno} — {formatFechaDisplay(confirmacion.fecha)}
+          </p>
+          <div className="inv-confirm-badge">
+            Confirmado en servidor · {formatHora(confirmacion.hora)}
+          </div>
+          <div className="inv-confirm-resumen">
+            <div className="inv-confirm-stat">
+              <strong>{confirmacion.totalRegistrado}</strong>
+              <span>Ítems registrados</span>
+            </div>
+            <div className="inv-confirm-stat inv-confirm-stat-traer">
+              <strong>{confirmacion.traer.length}</strong>
+              <span>Por traer</span>
+            </div>
+          </div>
+          {confirmacion.traer.length > 0 && (
+            <div className="inv-confirm-traer-lista">
+              <p className="inv-confirm-traer-titulo">Pendientes por traer:</p>
+              <ul>
+                {confirmacion.traer.map((nombre, i) => (
+                  <li key={i}>{nombre}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <button className="inv-confirm-cerrar" onClick={() => setConfirmacion(null)}>
+            Cerrar
+          </button>
+        </div>
       </div>
     );
   }

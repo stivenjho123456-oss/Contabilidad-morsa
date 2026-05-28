@@ -1800,6 +1800,111 @@ nav { flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 3
   text-align: center;
   opacity: 0.6;
 }
+/* ── Pantalla de confirmación post-guardado ── */
+.inv-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+.inv-confirm-card {
+  background: #1c1917;
+  border-radius: 20px;
+  padding: 32px 24px 24px;
+  width: 100%;
+  max-width: 360px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.inv-confirm-check {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #16a34a;
+  color: #fff;
+  font-size: 32px;
+  line-height: 64px;
+  margin: 0 auto 16px;
+}
+.inv-confirm-titulo {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+  color: #f5f5f4;
+}
+.inv-confirm-subtitulo {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: #a8a29e;
+}
+.inv-confirm-badge {
+  display: inline-block;
+  background: #14532d;
+  color: #86efac;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+  margin-bottom: 20px;
+}
+.inv-confirm-resumen {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.inv-confirm-stat {
+  background: #292524;
+  border-radius: 12px;
+  padding: 12px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+.inv-confirm-stat strong { font-size: 28px; font-weight: 700; color: #f5f5f4; }
+.inv-confirm-stat span { font-size: 12px; color: #a8a29e; }
+.inv-confirm-stat-traer strong { color: #fb923c; }
+.inv-confirm-traer-lista {
+  background: #292524;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  text-align: left;
+}
+.inv-confirm-traer-titulo {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #a8a29e;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.inv-confirm-traer-lista ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.inv-confirm-traer-lista li { font-size: 14px; color: #fb923c; }
+.inv-confirm-cerrar {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: none;
+  background: #44403c;
+  color: #f5f5f4;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.inv-confirm-cerrar:hover { background: #57534e; }
 .inv-logo { font-size: 28px; }
 .inv-title {
   margin: 0;
