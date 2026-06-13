@@ -33,7 +33,7 @@ function formatHora(date) {
 // ─── Componente ──────────────────────────────────────────────────────────────
 
 export function InventarioMobileView({ session, setError, notify, onLogout }) {
-  const today = new Date().toLocaleDateString("en-CA");
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
   const [fecha, setFecha] = useState(today);
   const [turno, setTurno] = useState(1);
   const [turnosDelDia, setTurnosDelDia] = useState([]);
@@ -56,6 +56,8 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
 
   // Ref para auto-save: siempre apunta a la versión más reciente de guardar
   const guardarRef = useRef(null);
+  // Contador de generación para cancelar cargas de registro obsoletas (race condition)
+  const registroGenRef = useRef(0);
 
   // ── Effects ────────────────────────────────────────────────────────────────
 
@@ -139,9 +141,14 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
   }
 
   async function cargarRegistro() {
+    // Incrementar generación: si esta carga queda obsoleta por una más reciente,
+    // el resultado se descarta y no sobreescribe el estado correcto
+    registroGenRef.current += 1;
+    const gen = registroGenRef.current;
     try {
       setCargandoRegistro(true);
       const data = await request(`/api/inventario?fecha=${fecha}&turno=${turno}`);
+      if (registroGenRef.current !== gen) return;
       const reg = {};
       const loadedExtras = [];
       let serverTs = 0;
@@ -152,8 +159,10 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
           loadedExtras.push({ nombre: item.nombre_extra, notas: item.notas || "" });
         }
         if (item.created_at) {
+          // El servidor almacena timestamps ISO 8601 con zona horaria (+00:00 / Z)
+          // para que la comparación con Date.now() (UTC) sea correcta
           const t = new Date(item.created_at).getTime();
-          if (t > serverTs) serverTs = t;
+          if (!isNaN(t) && t > serverTs) serverTs = t;
         }
       });
       setRegistro(reg);
@@ -163,13 +172,14 @@ export function InventarioMobileView({ session, setError, notify, onLogout }) {
       const draft = cargarBorrador(fecha, turno);
       setBorradorLocal(draft && draft.ts > serverTs ? draft : null);
     } catch (err) {
+      if (registroGenRef.current !== gen) return;
       setError(err.message);
       setRegistro({});
       // Si el servidor falló, ofrecer igualmente el borrador local
       const draft = cargarBorrador(fecha, turno);
       if (draft) setBorradorLocal(draft);
     } finally {
-      setCargandoRegistro(false);
+      if (registroGenRef.current === gen) setCargandoRegistro(false);
     }
   }
 

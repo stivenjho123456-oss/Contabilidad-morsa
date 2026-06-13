@@ -288,6 +288,7 @@ class _PgConnectionWrapper:
         self._last_id: int | None = None
         self.row_factory = None
         self._broken = False  # se marca True si hay error de conexión
+        self._in_explicit_tx = False  # True mientras hay un BEGIN sin COMMIT/ROLLBACK
 
     # ------------------------------------------------------------------
     def execute(self, sql: str, params=None):
@@ -325,6 +326,13 @@ class _PgConnectionWrapper:
         is_insert = sql_upper.startswith("INSERT")
         adapted = _adapt_sql(sql)
 
+        # Rastrear transacciones explícitas para que commit()/rollback() funcionen
+        # aunque autocommit=True esté activo en la conexión psycopg2
+        if sql_upper.startswith("BEGIN"):
+            self._in_explicit_tx = True
+        elif sql_upper in ("COMMIT", "ROLLBACK"):
+            self._in_explicit_tx = False
+
         if is_insert and "RETURNING" not in adapted.upper():
             adapted = adapted.rstrip().rstrip(";") + " RETURNING id"
 
@@ -354,20 +362,40 @@ class _PgConnectionWrapper:
         )
 
     def commit(self):
-        try:
-            self._conn.commit()
-        except Exception:
-            # Con autocommit=True cada sentencia ya fue confirmada; commit() no tiene efecto
-            pass
+        if self._in_explicit_tx:
+            # Hay un BEGIN activo: enviar COMMIT como SQL explícito porque
+            # psycopg2.commit() es no-op cuando autocommit=True
+            try:
+                self._cur.execute("COMMIT")
+                self._in_explicit_tx = False
+            except Exception:
+                pass
+        else:
+            try:
+                self._conn.commit()
+            except Exception:
+                pass
 
     def rollback(self):
-        try:
-            self._conn.rollback()
-        except Exception:
-            # Con autocommit=True no hay transacción activa; rollback() no tiene efecto
-            pass
+        if self._in_explicit_tx:
+            try:
+                self._cur.execute("ROLLBACK")
+                self._in_explicit_tx = False
+            except Exception:
+                pass
+        else:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
 
     def close(self):
+        if self._in_explicit_tx:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            self._in_explicit_tx = False
         try:
             self._cur.close()
         except Exception:
@@ -516,6 +544,14 @@ class _PooledPgConnectionWrapper(_PgConnectionWrapper):
         if self._returned:
             return
         self._returned = True
+        # Si quedó una transacción abierta sin commit (ej: excepción antes de conn.commit()),
+        # hacer rollback para dejar la conexión limpia antes de devolverla al pool
+        if self._in_explicit_tx:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            self._in_explicit_tx = False
         try:
             self._cur.close()
         except Exception:

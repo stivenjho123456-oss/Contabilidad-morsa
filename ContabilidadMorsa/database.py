@@ -5,7 +5,7 @@ import json
 import re
 import threading
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -2849,7 +2849,7 @@ def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None, tu
         raise AppValidationError('No se puede guardar un inventario vacío. Marca al menos un insumo.')
     conn = get_connection()
     try:
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat(timespec='seconds')
 
         # Calcular siguiente versión para ítems
         row = conn.execute(

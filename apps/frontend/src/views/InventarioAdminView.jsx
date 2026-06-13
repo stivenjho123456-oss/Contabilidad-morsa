@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { request } from "../lib/api";
 
 export function InventarioAdminView({ reload, setError, notify }) {
-  const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD en hora local
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
   const [fecha, setFecha] = useState(today);
   const [turno, setTurno] = useState(1);
   const [turnosDelDia, setTurnosDelDia] = useState([]);
