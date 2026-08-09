@@ -363,6 +363,15 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
 
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip_address   TEXT NOT NULL,
+                attempted_at TEXT NOT NULL,
+                success      INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address, attempted_at);
+
             CREATE TABLE IF NOT EXISTS archivos (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 scope         TEXT NOT NULL,
