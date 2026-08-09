@@ -98,8 +98,8 @@ La API ya valida el contrato del esquema al arrancar. Si algo falta, lo reporta 
 
 ## 5. Subir el backend a Railway
 
-En este repo ya existe [apps/backend/Dockerfile](/Users/stivenjohanhurtado/Contabilidad%20Morsa/apps/backend/Dockerfile) para desplegar FastAPI en Railway.
-Tambien existe [Dockerfile](/Users/stivenjohanhurtado/Contabilidad%20Morsa/Dockerfile) en la raiz para que Railway detecte automaticamente el build cuando el servicio se crea desde el repositorio completo.
+El [Dockerfile](/Users/stivenjohanhurtado/Contabilidad%20Morsa/Dockerfile) de la raiz es el que usa Railway. Es multi-stage: compila el SPA y lo empaqueta junto al backend (ver seccion 6).
+El [apps/backend/Dockerfile](/Users/stivenjohanhurtado/Contabilidad%20Morsa/apps/backend/Dockerfile) es solo-backend y espera el contexto de build en la raiz del repo. No lo uses como "Root Directory" del servicio o el build falla.
 
 Variables minimas del servicio backend:
 
@@ -110,7 +110,6 @@ MORSA_PASSWORD_PEPPER=...
 MORSA_ADMIN_USERNAME=admin
 MORSA_ADMIN_PASSWORD=...
 MORSA_ADMIN_FULL_NAME=Administrador General
-MORSA_ALLOWED_ORIGINS=https://tu-frontend
 MORSA_SESSION_HOURS=12
 MORSA_ENABLE_DOCS=0
 PYTHONUNBUFFERED=1
@@ -118,7 +117,8 @@ PYTHONUNBUFFERED=1
 
 Notas:
 
-- Railway expone un `PORT` automaticamente; el `Dockerfile` ya lo usa.
+- Railway expone un `PORT` automaticamente (8080); el `Dockerfile` ya lo usa y lo declara con `EXPOSE`.
+- El **target port** del dominio publico debe coincidir con 8080. Si no coincide, el edge responde 502 `Application failed to respond` con el header `x-railway-fallback: true` y la peticion nunca llega a uvicorn.
 - Si el backend y la base viven en el mismo proyecto de Railway, usa la referencia `${{Postgres.DATABASE_URL}}` para no copiar credenciales a mano.
 - Railway documenta que los servicios publicos deben escuchar en `0.0.0.0:$PORT`.
 
@@ -135,10 +135,35 @@ El frontend React/Vite puede:
 - quedarse en Vercel, cambiando `VITE_API_URL` al nuevo backend de Railway
 - migrarse a Railway si quieres centralizar todo
 
-Si lo migras a Railway, al ser una SPA de Vite necesitas compilar `dist/` y servir archivos estaticos. Railway documenta dos enfoques viables:
+### Opcion recomendada: un solo servicio en Railway
+
+El `Dockerfile` de la raiz es multi-stage y ya hace todo: compila el SPA con Node
+y lo copia a `apps/frontend/dist` dentro de la imagen del backend. `main.py` monta
+ese directorio automaticamente si existe, asi que FastAPI sirve la API y el SPA
+desde el mismo dominio.
+
+Ventajas de este enfoque:
+
+- Un solo servicio, un solo dominio, un solo deploy
+- No hay CORS: el SPA llama a su misma origen
+- No hay `VITE_API_URL` que se pueda quedar apuntando a un backend viejo
+
+El SPA se compila con `VITE_API_URL=""`. Con la base vacia el cliente arma URLs
+relativas (`/api/...`). No pongas `VITE_API_URL` como variable del servicio en
+Railway: eso solo aplica en build time y romperia el mismo-origen.
+
+`MORSA_ALLOWED_ORIGINS` deja de importar en este modo, porque el navegador nunca
+hace una peticion cross-origin.
+
+### Opcion alternativa: servicio estatico aparte
+
+Si prefieres separar frontend y backend, Railway documenta dos enfoques:
 
 - hosting estatico desde GitHub
 - servir `dist` con `serve --single --listen $PORT dist`
+
+En ese caso si necesitas `VITE_API_URL` apuntando al backend y
+`MORSA_ALLOWED_ORIGINS` con el dominio del frontend.
 
 Referencias oficiales:
 

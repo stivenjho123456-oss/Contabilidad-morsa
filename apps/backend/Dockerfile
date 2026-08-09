@@ -12,4 +12,6 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY ContabilidadMorsa /app/ContabilidadMorsa
 COPY apps/backend /app/apps/backend
 
-CMD ["sh", "-c", "uvicorn apps.backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2 --log-level info"]
+EXPOSE 8080
+
+CMD ["sh", "-c", "uvicorn apps.backend.app.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 2 --log-level info"]
