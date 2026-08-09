@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import threading
@@ -20,9 +21,13 @@ from database import (
     get_auth_user_by_username,
     log_auditoria,
     revoke_auth_session,
+    revoke_auth_sessions_for_user,
     set_auth_last_login,
+    set_auth_password,
     touch_auth_session,
 )
+
+logger = logging.getLogger("contabilidad_morsa.auth")
 
 
 SESSION_HEADER = "Authorization"
@@ -33,6 +38,7 @@ SESSION_DURATION_HOURS = float(os.getenv("MORSA_SESSION_HOURS", "12"))
 BOOTSTRAP_ADMIN_USERNAME = os.getenv("MORSA_ADMIN_USERNAME", "").strip()
 BOOTSTRAP_ADMIN_PASSWORD = os.getenv("MORSA_ADMIN_PASSWORD", "").strip()
 BOOTSTRAP_ADMIN_FULL_NAME = os.getenv("MORSA_ADMIN_FULL_NAME", "Administrador General").strip() or "Administrador General"
+PASSWORD_RESET_REQUEST = os.getenv("MORSA_PASSWORD_RESET", "").strip()
 
 # ── Caché de sesiones en memoria ──────────────────────────────────────────────
 # Evita 2 queries a la BD por cada request autenticado.
@@ -64,6 +70,13 @@ def _put_cached_session(token_hash: str, session_data: dict) -> None:
 def _invalidate_cached_session(token_hash: str) -> None:
     with _session_cache_lock:
         _session_cache.pop(token_hash, None)
+
+
+def _clear_session_cache() -> None:
+    """Vacía la caché completa. Se usa tras un cambio de contraseña, donde importa
+    más cerrar sesiones de inmediato que ahorrar queries."""
+    with _session_cache_lock:
+        _session_cache.clear()
 
 
 # ── Helpers internos ──────────────────────────────────────────────────────────
@@ -199,6 +212,90 @@ def ensure_bootstrap_admin_from_env():
     )
     log_auditoria("usuarios", "BOOTSTRAP", entidad_id=user["id"], detalle=f"Usuario inicial {user['username']} creado desde entorno.")
     return user
+
+
+# ── Recuperación de contraseña ────────────────────────────────────────────────
+# No hay servidor de correo en este proyecto, asi que no existe el flujo de
+# "enviar link de recuperación". La identidad se prueba con algo equivalente:
+# tener acceso a las variables de entorno del servicio o a la base de datos.
+# Cualquiera de las dos cosas ya implica control total del despliegue.
+
+def reset_user_password(username: str, new_password: str, *, origen: str = "manual"):
+    """Reemplaza la contraseña de un usuario y cierra todas sus sesiones.
+
+    No pide la contraseña anterior: quien llega aquí ya demostró control del
+    despliegue. Devuelve el usuario público actualizado.
+    """
+    user = get_auth_user_by_username(username, include_password=True)
+    if not user:
+        raise AppValidationError(f"No existe el usuario '{username}'.")
+
+    password_hash = hash_password(new_password)  # valida fortaleza antes de tocar la BD
+    set_auth_password(user["id"], password_hash)
+    revoked = revoke_auth_sessions_for_user(user["id"])
+    _clear_session_cache()
+
+    log_auditoria(
+        "usuarios",
+        "PASSWORD_RESET",
+        entidad_id=user["id"],
+        detalle=f"Contraseña de {user['username']} restablecida ({origen}). Sesiones cerradas: {revoked}.",
+    )
+    logger.warning(
+        "Contraseña restablecida para '%s' (origen=%s). Sesiones cerradas: %s.",
+        user["username"],
+        origen,
+        revoked,
+    )
+    return {"username": user["username"], "sesiones_cerradas": revoked}
+
+
+def apply_env_password_reset():
+    """Aplica MORSA_PASSWORD_RESET='usuario:ContraseñaNueva' si está definida.
+
+    Pensada para el caso "olvidé la contraseña y no puedo entrar": se define la
+    variable en el panel del hosting, se reinicia el servicio y se entra con la
+    contraseña nueva. Es idempotente — si la contraseña ya es la pedida no vuelve
+    a cerrar sesiones — y nunca tumba el arranque: los errores solo se registran.
+    """
+    if not PASSWORD_RESET_REQUEST:
+        return None
+
+    if ":" not in PASSWORD_RESET_REQUEST:
+        logger.error("MORSA_PASSWORD_RESET ignorada: el formato debe ser 'usuario:ContraseñaNueva'.")
+        return None
+
+    username, _, new_password = PASSWORD_RESET_REQUEST.partition(":")
+    username = username.strip()
+    if not username or not new_password:
+        logger.error("MORSA_PASSWORD_RESET ignorada: usuario o contraseña vacíos.")
+        return None
+
+    try:
+        user = get_auth_user_by_username(username, include_password=True)
+        if not user:
+            logger.error("MORSA_PASSWORD_RESET ignorada: no existe el usuario '%s'.", username)
+            return None
+
+        if verify_password(new_password, user.get("password_hash", "")):
+            logger.info(
+                "MORSA_PASSWORD_RESET ya estaba aplicada para '%s'. "
+                "Elimina la variable del entorno para no dejarla activa.",
+                user["username"],
+            )
+            return None
+
+        result = reset_user_password(username, new_password, origen="variable de entorno")
+        logger.warning(
+            "MORSA_PASSWORD_RESET aplicada para '%s'. "
+            "ELIMINA esa variable del entorno ahora: mientras siga definida, "
+            "la contraseña vuelve a este valor en cada reinicio.",
+            result["username"],
+        )
+        return result
+    except Exception:
+        logger.exception("MORSA_PASSWORD_RESET falló. El arranque continúa sin aplicarla.")
+        return None
 
 
 def authenticate_user(username: str, password: str, *, user_agent: str = "", ip_address: str = ""):

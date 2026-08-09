@@ -85,6 +85,7 @@ El `smoke_test.py` levanta la app con SQLite en un directorio temporal (`MORSA_A
 | `MORSA_API_SECRET` | Render | Token de auth entre frontend y backend |
 | `MORSA_PASSWORD_PEPPER` | Render | Pepper para hashing de contraseñas |
 | `MORSA_ALLOW_SQLITE` | Solo tests | Habilita SQLite como fallback |
+| `MORSA_PASSWORD_RESET` | Temporal | `usuario:ClaveNueva` — restablece esa contraseña al arrancar. Borrar tras usar |
 | `VITE_API_URL` | `apps/frontend/.env` | URL del backend |
 
 ## Consideraciones importantes
@@ -92,4 +93,5 @@ El `smoke_test.py` levanta la app con SQLite en un directorio temporal (`MORSA_A
 - **No usar `;` en comentarios SQL** de archivos de migración — el runner los parte por `;` y ejecutaría el texto del comentario como sentencia.
 - **`REQUIRED_PG_SCHEMA`** en `db_adapter.py` debe actualizarse cada vez que se agrega una columna a una tabla existente, o el health check falla al arrancar.
 - **`@serialized_write`** es un decorator en `database.py` que serializa escrituras concurrentes con un `threading.RLock`. Debe aplicarse a todas las funciones que escriben a la DB.
+- **Recuperación de contraseña**: no hay correo. Se hace con `MORSA_PASSWORD_RESET` o con `apps/backend/reset_password.py`. Ver [docs/recuperar-password.md](docs/recuperar-password.md).
 - Las fechas se almacenan como `TEXT` en formato `YYYY-MM-DD`. Los timestamps (`created_at`, `deleted_at`) como ISO 8601. La conversión de zona horaria (Colombia = UTC-5) es responsabilidad del frontend al construir el campo `fecha`.

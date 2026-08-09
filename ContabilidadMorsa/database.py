@@ -568,6 +568,47 @@ def set_auth_last_login(user_id):
 
 
 @serialized_write
+def set_auth_password(user_id, password_hash):
+    """Reemplaza el hash de contraseña de un usuario. El hash ya debe venir calculado."""
+    if not password_hash:
+        raise AppValidationError('La contraseña del usuario no pudo guardarse.')
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec='seconds')
+        cursor = conn.execute(
+            'UPDATE usuarios SET password_hash=?, updated_at=? WHERE id=?',
+            (password_hash, now, user_id),
+        )
+        if cursor.rowcount == 0:
+            raise AppValidationError('El usuario indicado no existe.')
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@serialized_write
+def revoke_auth_sessions_for_user(user_id):
+    """Cierra todas las sesiones abiertas de un usuario. Devuelve cuántas revocó."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            'UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',
+            (datetime.now().isoformat(timespec='seconds'), user_id),
+        )
+        revoked = cursor.rowcount or 0
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return revoked
+
+
+@serialized_write
 def cleanup_auth_sessions():
     conn = get_connection()
     try:

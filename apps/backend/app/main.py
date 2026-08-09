@@ -113,6 +113,7 @@ from database import (  # noqa: E402
 from auth_service import (  # noqa: E402
     SESSION_HEADER as API_TOKEN_HEADER,
     SESSION_SCHEME as API_TOKEN_SCHEME,
+    apply_env_password_reset,
     auth_status as get_auth_status,
     authenticate_user,
     bootstrap_admin_env_configured,
@@ -708,6 +709,7 @@ def on_startup():
         else:
             init_db()
         ensure_bootstrap_admin_from_env()
+        apply_env_password_reset()
         _refresh_runtime_status(app.state.runtime, force=True)
     except DatabaseSchemaError as exc:
         logger.error("Esquema PostgreSQL inválido en startup: %s", exc)
