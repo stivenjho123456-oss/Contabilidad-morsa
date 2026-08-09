@@ -99,6 +99,7 @@ La API ya valida el contrato del esquema al arrancar. Si algo falta, lo reporta 
 ## 5. Subir el backend a Railway
 
 En este repo ya existe [apps/backend/Dockerfile](/Users/stivenjohanhurtado/Contabilidad%20Morsa/apps/backend/Dockerfile) para desplegar FastAPI en Railway.
+Tambien existe [Dockerfile](/Users/stivenjohanhurtado/Contabilidad%20Morsa/Dockerfile) en la raiz para que Railway detecte automaticamente el build cuando el servicio se crea desde el repositorio completo.
 
 Variables minimas del servicio backend:
 
