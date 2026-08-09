@@ -61,6 +61,10 @@ VITE_API_URL=https://tu-backend.onrender.com
 4. Despliega el frontend con `vercel.json`.
 5. Ajusta `MORSA_ALLOWED_ORIGINS` con la URL final de Vercel.
 
+## Migracion a Railway
+
+Si quieres mover infraestructura desde Supabase + Render + Vercel hacia Railway, revisa la guia paso a paso en [docs/railway-migration.md](/Users/stivenjohanhurtado/Contabilidad%20Morsa/docs/railway-migration.md).
+
 ## Verificación
 
 ```bash
