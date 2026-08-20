@@ -1407,6 +1407,37 @@ def trigger_backup(request: Request):
         _handle_validation(exc)
 
 
+@app.get("/api/admin/backup/descargar")
+def descargar_backup(request: Request):
+    """Genera un respaldo y lo entrega como archivo descargable.
+
+    El respaldo que guarda backup_critical_tables() vive en la tabla 'archivos',
+    o sea dentro de la misma base que pretende proteger: si se pierde la base se
+    pierde con ella. Este endpoint entrega el mismo contenido como descarga para
+    que quede una copia fuera del servidor, que es lo unico que sirve como
+    respaldo de verdad.
+    """
+    _require_admin(request)
+    try:
+        result = backup_critical_tables()
+    except Exception as exc:
+        _handle_validation(exc)
+        return
+
+    archivo = get_archivo_blob(result["archivo_id"])
+    if not archivo:
+        raise HTTPException(status_code=500, detail="El respaldo se generó pero no pudo recuperarse.")
+
+    return StreamingResponse(
+        BytesIO(bytes(archivo["content"])),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{result["file_name"]}"',
+            "X-Backup-Rows": str(sum(result["rows"].values())),
+        },
+    )
+
+
 @app.get("/api/auditoria")
 def auditoria(limit: int = Query(default=120, ge=1, le=500)):
     return _api_ok(

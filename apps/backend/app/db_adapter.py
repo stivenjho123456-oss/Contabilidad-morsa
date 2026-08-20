@@ -65,6 +65,7 @@ REQUIRED_PG_SCHEMA: dict[str, tuple[str, ...]] = {
         "saldo_esperado", "saldo_real", "diferencia", "observaciones", "cerrado", "created_at",
     ),
     "caja_ajustes": ("id", "fecha", "tipo", "valor", "motivo", "observaciones", "created_at"),
+    "caja_apertura": ("id", "mes", "ano", "efectivo", "bancos", "tarjeta_cr", "observaciones", "created_at"),
     "usuarios": (
         "id", "username", "full_name", "password_hash", "role", "active",
         "created_at", "updated_at", "last_login_at",

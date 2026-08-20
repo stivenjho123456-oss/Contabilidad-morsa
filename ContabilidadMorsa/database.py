@@ -372,6 +372,52 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address, attempted_at);
 
+            CREATE TABLE IF NOT EXISTS insumos (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre     TEXT NOT NULL UNIQUE,
+                categoria  TEXT DEFAULT 'General',
+                unidad     TEXT DEFAULT 'unidad',
+                activo     INTEGER DEFAULT 1,
+                orden      INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS inventario_diario (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha        TEXT NOT NULL,
+                turno        INTEGER NOT NULL DEFAULT 1,
+                version      INTEGER NOT NULL DEFAULT 1,
+                insumo_id    INTEGER,
+                nombre_extra TEXT,
+                estado       TEXT NOT NULL,
+                cantidad     REAL,
+                notas        TEXT,
+                usuario_id   INTEGER,
+                created_at   TEXT NOT NULL,
+                deleted_at   TEXT
+            );
+
+            -- Sin UNIQUE(fecha, turno): cada guardado del mismo turno inserta una
+            -- version nueva. La unicidad va por fecha+turno+version entre filas vivas,
+            -- igual que en la migracion 0004 de PostgreSQL.
+            CREATE TABLE IF NOT EXISTS inventario_turno (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha         TEXT NOT NULL,
+                turno         INTEGER NOT NULL DEFAULT 1,
+                version       INTEGER NOT NULL DEFAULT 1,
+                observaciones TEXT,
+                usuario_id    INTEGER,
+                created_at    TEXT NOT NULL,
+                deleted_at    TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_inventario_diario_fecha_turno
+                ON inventario_diario(fecha, turno) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_inventario_turno_fecha
+                ON inventario_turno(fecha) WHERE deleted_at IS NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_inventario_turno_fecha_turno_version
+                ON inventario_turno(fecha, turno, version) WHERE deleted_at IS NULL;
+
             CREATE TABLE IF NOT EXISTS archivos (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 scope         TEXT NOT NULL,
@@ -1380,7 +1426,20 @@ def get_tipos_gasto_distintos():
 # ─── Nomina ─────────────────────────────────────────────────────────────────
 
 @serialized_write
-def clear_nomina(origen_archivo=None, conn=None):
+def clear_nomina(origen_archivo=None, conn=None, borrar_todo=False):
+    """Borra registros de nomina de un archivo de origen.
+
+    Sin `origen_archivo` el borrado seria de las tres tablas completas, asi que
+    ese caso exige ademas `borrar_todo=True`. Es una barrera contra la llamada
+    accidental: un `clear_nomina()` a secas —por un origen_archivo que llego
+    vacio, por ejemplo— vaciaba toda la nomina historica sin preguntar.
+    """
+    if not origen_archivo and not borrar_todo:
+        raise AppValidationError(
+            'clear_nomina() sin origen_archivo borraria toda la nomina. '
+            'Si es lo que quieres, pasa borrar_todo=True de forma explicita.'
+        )
+
     owns_conn = conn is None
     conn = conn or get_connection()
     try:
@@ -2947,7 +3006,12 @@ def save_inventario_diario(fecha, items, usuario_id=None, observaciones=None, tu
 
 # ── Backup ────────────────────────────────────────────────────────────────────
 
+# Todas las tablas de negocio. Si se agrega una tabla nueva al esquema, va aqui:
+# un respaldo que omite una tabla es peor que no tener respaldo, porque da
+# confianza falsa. Se excluyen a proposito las operativas (auth_sessions,
+# login_attempts, schema_migrations) y 'archivos', que es donde vive el respaldo.
 _BACKUP_TABLES = [
+    'proveedores',
     'insumos',
     'inventario_diario',
     'inventario_turno',
@@ -2956,8 +3020,21 @@ _BACKUP_TABLES = [
     'caja_ajustes',
     'caja_apertura',
     'cuadre_caja',
+    'cierres_mensuales',
+    'nomina_resumen',
+    'nomina_seg_social',
+    'nomina_novedades',
+    'nomina_asistencia',
+    'usuarios',
     'auditoria',
 ]
+
+# El respaldo se descarga a un equipo, asi que no se lleva los hashes de
+# contraseña. Se conserva el resto de la fila para poder reconstruir quien
+# existia y con que rol; las contraseñas se reponen con MORSA_PASSWORD_RESET.
+_BACKUP_COLUMNAS_OMITIDAS = {
+    'usuarios': ('password_hash',),
+}
 
 
 def backup_critical_tables():
@@ -2973,7 +3050,12 @@ def backup_critical_tables():
     try:
         for table in _BACKUP_TABLES:
             rows = conn.execute(f'SELECT * FROM {table}').fetchall()
-            data[table] = [dict(r) for r in rows]
+            filas = [dict(r) for r in rows]
+            if table in _BACKUP_COLUMNAS_OMITIDAS:
+                for fila in filas:
+                    for columna in _BACKUP_COLUMNAS_OMITIDAS[table]:
+                        fila.pop(columna, None)
+            data[table] = filas
     finally:
         conn.close()
 
