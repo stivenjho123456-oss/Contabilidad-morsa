@@ -13,7 +13,7 @@ import {
   EMPTY_SYSTEM_SUMMARY,
   NAV_ITEMS,
 } from "./lib/constants";
-import { AuthView, Toast } from "./components/ui";
+import { AuthView, PreguntasSeguridadModal, Toast } from "./components/ui";
 import { CajaView } from "./views/CajaView";
 import { DashboardView } from "./views/DashboardView";
 import { EgresosView } from "./views/EgresosView";
@@ -48,6 +48,7 @@ function buildViewCacheKey(view, { month, year, periodoNomina }) {
 // ── App root ──────────────────────────────────────────────────────────────────
 
 function App() {
+  const [preguntasAbierto, setPreguntasAbierto] = useState(false);
   const now = new Date();
   const currentYear = now.getFullYear();
   const [activeView, setActiveView] = useState("dashboard");
@@ -518,6 +519,10 @@ function App() {
     <div className="app-shell">
       <Toast notice={notice} onClose={() => setNotice(null)} />
 
+      {preguntasAbierto && (
+        <PreguntasSeguridadModal onClose={() => setPreguntasAbierto(false)} notify={notify} />
+      )}
+
       {/* Overlay — toca para cerrar sidebar en móvil */}
       <div
         className={`sidebar-overlay${sidebarOpen ? " sidebar-overlay--open" : ""}`}
@@ -551,6 +556,9 @@ function App() {
               {authSession.user?.role === "admin" ? "Administrador" : authSession.user?.role || "Usuario"}
             </span>
           </div>
+          <button type="button" className="sidebar-secondary" onClick={() => setPreguntasAbierto(true)}>
+            Preguntas de recuperación
+          </button>
           <button type="button" className="sidebar-logout" onClick={handleLogout}>
             Cerrar sesión
           </button>

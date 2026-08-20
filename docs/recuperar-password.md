@@ -1,12 +1,52 @@
 # Recuperar la contraseña
 
 Este proyecto no tiene servidor de correo, asi que no existe el flujo de "te
-enviamos un link a tu email". La identidad se prueba con algo equivalente: tener
-acceso al panel del hosting o a la base de datos. Cualquiera de las dos cosas ya
-implica control total del despliegue, asi que no tiene sentido pedir tambien la
-contraseña anterior.
+enviamos un link a tu email". Hay tres caminos, del mas comodo al de ultimo
+recurso.
 
-Hay dos caminos. Elige segun lo que tengas a mano.
+## Camino 0: preguntas de seguridad (desde la propia app)
+
+Es el unico que no necesita acceso a ninguna infraestructura. Cualquiera del
+equipo lo puede usar solo.
+
+**Configurarlas primero** (se hace una vez, estando dentro de la app):
+
+1. Barra lateral -> **Preguntas de recuperacion**
+2. Elige 3 preguntas del listado o escribe las tuyas
+3. Responde cada una y confirma con tu contraseña actual
+4. Guardar
+
+Pedir la contraseña actual evita que una sesion olvidada en un equipo ajeno
+pueda cambiar las preguntas y quedarse con la cuenta.
+
+**Usarlas cuando olvidaste la contraseña:**
+
+1. En la pantalla de login, **¿Olvidaste tu contraseña?**
+2. Escribe tu usuario
+3. Responde las 3 preguntas y define la contraseña nueva
+
+Detalles que importan:
+
+- Las respuestas **no distinguen mayusculas ni tildes**: "Bogota", "bogotá" y
+  "  BOGOTA " valen igual. Se normalizan antes de compararlas.
+- Hay que acertar **todas**. Si falla una, el mensaje no dice cual: decirlo
+  convertiria el formulario en una guia para adivinar de a una.
+- Tras 5 intentos fallidos la cuenta queda bloqueada 15 minutos, contando **por
+  IP y por usuario**. Sin el limite por usuario, alguien rotando de IP podria
+  adivinar sin techo.
+- Las respuestas se guardan hasheadas con el mismo PBKDF2 de las contraseñas.
+  Quien lea la base de datos no puede responder las preguntas.
+- Al recuperar se cierran todas las sesiones abiertas de esa cuenta.
+
+Si nunca configuraste preguntas, este camino no esta disponible y hay que usar
+los dos siguientes, que exigen acceso al despliegue.
+
+## Los otros dos caminos
+
+Estos son para el dueño del sistema, y sirven aunque no haya preguntas
+configuradas. La identidad se prueba con algo equivalente al correo: tener
+acceso al panel del hosting o a la base de datos. Cualquiera de las dos cosas ya
+implica control total del despliegue.
 
 ## Camino 1: variable de entorno (no necesita instalar nada)
 

@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import logging
 import os
+import unicodedata
 import secrets
 import threading
 import time
@@ -20,10 +21,12 @@ from database import (
     get_auth_session_by_hash,
     get_auth_user_by_username,
     log_auditoria,
+    get_preguntas_usuario,
     revoke_auth_session,
     revoke_auth_sessions_for_user,
     set_auth_last_login,
     set_auth_password,
+    set_preguntas_usuario,
     touch_auth_session,
 )
 
@@ -212,6 +215,143 @@ def ensure_bootstrap_admin_from_env():
     )
     log_auditoria("usuarios", "BOOTSTRAP", entidad_id=user["id"], detalle=f"Usuario inicial {user['username']} creado desde entorno.")
     return user
+
+
+# ── Preguntas de seguridad ────────────────────────────────────────────────────
+# Sin servidor de correo no hay "enlace de recuperación", asi que la identidad se
+# prueba con algo que solo el usuario sabe. Las respuestas se hashean igual que
+# las contraseñas: quien lea la base no puede responder las preguntas.
+
+PREGUNTAS_MINIMAS = 3
+RESPUESTA_MINIMA = 3
+
+PREGUNTAS_SUGERIDAS = [
+    "¿Cómo se llamaba tu primera mascota?",
+    "¿En qué ciudad nació tu madre?",
+    "¿Cuál fue tu primer trabajo?",
+    "¿Cómo se llamaba tu mejor amigo de la infancia?",
+    "¿Cuál es tu plato favorito?",
+    "¿En qué colegio estudiaste primaria?",
+    "¿Cuál fue la marca de tu primer carro o moto?",
+    "¿Cómo se llamaba tu profesor favorito?",
+]
+
+
+def normalizar_respuesta(texto: str) -> str:
+    """Deja la respuesta comparable: sin tildes, en minúsculas y sin espacios de más.
+
+    Asi "Bogotá", "bogota" y "  BOGOTA " cuentan como la misma respuesta. Sin esto
+    la recuperación fallaria por detalles de tecleo justo cuando mas se necesita.
+    """
+    limpio = unicodedata.normalize("NFD", (texto or "").strip().lower())
+    limpio = "".join(ch for ch in limpio if unicodedata.category(ch) != "Mn")
+    return " ".join(limpio.split())
+
+
+def _hash_respuesta(respuesta: str) -> str:
+    """Hashea una respuesta normalizada reusando el mismo PBKDF2 de las contraseñas."""
+    normalizada = normalizar_respuesta(respuesta)
+    if len(normalizada) < RESPUESTA_MINIMA:
+        raise AppValidationError(
+            f"Cada respuesta debe tener al menos {RESPUESTA_MINIMA} caracteres."
+        )
+    salt = secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac(
+        "sha256",
+        (normalizada + PASSWORD_PEPPER).encode("utf-8"),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
+    return (
+        f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}$"
+        f"{base64.b64encode(salt).decode('ascii')}$"
+        f"{base64.b64encode(derived).decode('ascii')}"
+    )
+
+
+def _verificar_respuesta(respuesta: str, respuesta_hash: str) -> bool:
+    return verify_password(normalizar_respuesta(respuesta), respuesta_hash)
+
+
+def configurar_preguntas(user_id: int, password_actual: str, username: str, preguntas: list):
+    """Guarda las preguntas de un usuario. Exige su contraseña actual.
+
+    Pedir la contraseña evita que una sesión abierta y olvidada en un equipo
+    ajeno pueda cambiar las preguntas y con eso quedarse la cuenta.
+    """
+    if not verify_user_password(username, password_actual):
+        raise AppValidationError("La contraseña actual no es correcta.")
+
+    if len(preguntas) < PREGUNTAS_MINIMAS:
+        raise AppValidationError(
+            f"Debes configurar al menos {PREGUNTAS_MINIMAS} preguntas."
+        )
+
+    textos = [normalizar_respuesta(p.get("pregunta", "")) for p in preguntas]
+    if len(set(textos)) != len(textos):
+        raise AppValidationError("Las preguntas no pueden repetirse.")
+
+    respuestas = [normalizar_respuesta(p.get("respuesta", "")) for p in preguntas]
+    if len(set(respuestas)) != len(respuestas):
+        raise AppValidationError(
+            "Las respuestas no pueden ser todas iguales. Usa una distinta por pregunta."
+        )
+
+    preparadas = [
+        {"pregunta": p.get("pregunta", ""), "respuesta_hash": _hash_respuesta(p.get("respuesta", ""))}
+        for p in preguntas
+    ]
+    total = set_preguntas_usuario(user_id, preparadas)
+    logger.info("Preguntas de recuperación configuradas para user_id=%s (%s).", user_id, total)
+    return {"preguntas": total}
+
+
+def preguntas_publicas(username: str):
+    """Devuelve solo los textos de las preguntas de un usuario, sin respuestas.
+
+    Devuelve None si el usuario no existe o no tiene preguntas configuradas: el
+    endpoint responde igual en ambos casos para no revelar que usuarios existen.
+    """
+    user = get_auth_user_by_username(username)
+    if not user or not user.get("active"):
+        return None
+    preguntas = get_preguntas_usuario(user["id"])
+    if not preguntas:
+        return None
+    return [{"orden": p["orden"], "pregunta": p["pregunta"]} for p in preguntas]
+
+
+def recuperar_con_preguntas(username: str, respuestas: list, nueva_password: str):
+    """Verifica las respuestas y, si todas son correctas, cambia la contraseña.
+
+    Exige acertar TODAS las preguntas. Si falla una sola, no dice cual: decirlo
+    convertiria el formulario en una guia para adivinar de a una.
+    """
+    user = get_auth_user_by_username(username)
+    if not user or not user.get("active"):
+        raise AppValidationError("No se pudo verificar la identidad.")
+
+    configuradas = get_preguntas_usuario(user["id"], include_hash=True)
+    if not configuradas:
+        raise AppValidationError("Este usuario no tiene preguntas de recuperación configuradas.")
+
+    if len(respuestas) != len(configuradas):
+        raise AppValidationError("Debes responder todas las preguntas.")
+
+    por_orden = {r.get("orden"): r.get("respuesta", "") for r in respuestas}
+    todas_bien = True
+    for pregunta in configuradas:
+        entregada = por_orden.get(pregunta["orden"])
+        if entregada is None or not _verificar_respuesta(entregada, pregunta["respuesta_hash"]):
+            todas_bien = False  # se siguen verificando todas para no filtrar cual fallo por el tiempo
+
+    if not todas_bien:
+        log_auditoria("usuarios", "RECUPERACION_FALLIDA", entidad_id=user["id"],
+                      detalle=f"Respuestas incorrectas para {user['username']}.")
+        raise AppValidationError("Las respuestas no coinciden.")
+
+    resultado = reset_user_password(username, nueva_password, origen="preguntas de seguridad")
+    return resultado
 
 
 # ── Recuperación de contraseña ────────────────────────────────────────────────

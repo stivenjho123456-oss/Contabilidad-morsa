@@ -367,10 +367,25 @@ def init_db():
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 ip_address   TEXT NOT NULL,
                 attempted_at TEXT NOT NULL,
-                success      INTEGER NOT NULL DEFAULT 0
+                success      INTEGER NOT NULL DEFAULT 0,
+                username     TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address, attempted_at);
+            CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts(username, attempted_at);
+
+            CREATE TABLE IF NOT EXISTS usuario_preguntas (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id        INTEGER NOT NULL,
+                orden          INTEGER NOT NULL DEFAULT 0,
+                pregunta       TEXT NOT NULL,
+                respuesta_hash TEXT NOT NULL,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES usuarios(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_usuario_preguntas_user ON usuario_preguntas(user_id);
 
             CREATE TABLE IF NOT EXISTS insumos (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -620,6 +635,66 @@ def set_auth_last_login(user_id):
         raise
     finally:
         conn.close()
+
+
+# ── Preguntas de seguridad ────────────────────────────────────────────────────
+
+def get_preguntas_usuario(user_id, include_hash=False):
+    """Devuelve las preguntas configuradas por un usuario, en orden."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            'SELECT * FROM usuario_preguntas WHERE user_id=? ORDER BY orden, id',
+            (user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    resultado = []
+    for row in rows:
+        data = dict(row)
+        if not include_hash:
+            data.pop('respuesta_hash', None)
+        resultado.append(data)
+    return resultado
+
+
+@serialized_write
+def set_preguntas_usuario(user_id, preguntas):
+    """Reemplaza el juego completo de preguntas de un usuario.
+
+    `preguntas` es una lista de dicts con 'pregunta' y 'respuesta_hash'. Se
+    reemplaza todo de una vez para que nunca quede un juego a medias: o estan
+    las tres nuevas o siguen las tres viejas.
+    """
+    if not preguntas:
+        raise AppValidationError('Debes configurar al menos una pregunta.')
+
+    now = datetime.now().isoformat(timespec='seconds')
+    conn = get_connection()
+    try:
+        conn.execute('DELETE FROM usuario_preguntas WHERE user_id=?', (user_id,))
+        for orden, item in enumerate(preguntas):
+            pregunta = _clean_text(item.get('pregunta'))
+            respuesta_hash = item.get('respuesta_hash') or ''
+            if len(pregunta) < 5:
+                raise AppValidationError('Cada pregunta debe tener al menos 5 caracteres.')
+            if not respuesta_hash:
+                raise AppValidationError('La respuesta no pudo guardarse.')
+            conn.execute(
+                '''INSERT INTO usuario_preguntas (user_id, orden, pregunta, respuesta_hash, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?)''',
+                (user_id, orden, pregunta, respuesta_hash, now, now),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    log_auditoria('usuarios', 'PREGUNTAS_SET', entidad_id=user_id,
+                  detalle=f'Preguntas de recuperacion configuradas ({len(preguntas)}).')
+    return len(preguntas)
 
 
 @serialized_write

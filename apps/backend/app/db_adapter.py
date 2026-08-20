@@ -85,9 +85,8 @@ REQUIRED_PG_SCHEMA: dict[str, tuple[str, ...]] = {
         "id", "fecha", "turno", "version", "observaciones", "usuario_id", "created_at", "deleted_at",
     ),
     "schema_migrations": ("version", "name", "applied_at"),
-    "login_attempts": (
-        "id", "ip_address", "attempted_at", "success",
-    ),
+    "login_attempts": ("id", "ip_address", "attempted_at", "success", "username"),
+    "usuario_preguntas": ("id", "user_id", "orden", "pregunta", "respuesta_hash", "created_at", "updated_at"),
 }
 
 
@@ -269,6 +268,16 @@ class _PgCursorWrapper:
     def lastrowid(self):
         return getattr(self._cur, "lastrowid", None)
 
+    @property
+    def rowcount(self):
+        """Filas afectadas por el UPDATE/DELETE, como en sqlite3.Cursor.
+
+        database.py lo usa para saber si un UPDATE toco alguna fila. Sin esta
+        propiedad el codigo funciona en SQLite y revienta con AttributeError en
+        PostgreSQL, que es justo donde corre produccion.
+        """
+        return self._cur.rowcount
+
     def __iter__(self):
         desc = self._cur.description
         for row in self._cur:
@@ -410,6 +419,8 @@ class _PgConnectionWrapper:
 class _EmptyCursor:
     """Cursor vacío para PRAGMA y sentencias sin resultado."""
 
+    rowcount = 0
+
     def fetchone(self):
         return None
 
@@ -422,6 +433,8 @@ class _EmptyCursor:
 
 class _ScalarCursor:
     """Cursor que devuelve un único valor escalar (para last_insert_rowid)."""
+
+    rowcount = 1
 
     def __init__(self, value):
         self._value = value

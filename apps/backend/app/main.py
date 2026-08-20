@@ -428,6 +428,8 @@ def _public_request_path(path: str):
         or path == "/api/auth/status"
         or path == "/api/auth/login"
         or path == "/api/auth/bootstrap"
+        or path == "/api/auth/recuperar"
+        or path == "/api/auth/recuperar/preguntas"
         or (ENABLE_DOCS and path in {"/docs", "/openapi.json"})
         or path == "/favicon.svg"
         or path == "/icons.svg"

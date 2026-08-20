@@ -12,6 +12,8 @@ const PUBLIC_API_PATHS = new Set([
   "/api/auth/status",
   "/api/auth/login",
   "/api/auth/bootstrap",
+  "/api/auth/recuperar",
+  "/api/auth/recuperar/preguntas",
 ]);
 
 let apiSession = null;
